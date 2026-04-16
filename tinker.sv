@@ -399,6 +399,21 @@ module tinker_core (
     wire commit_en0;
     wire commit_en1;
 
+    wire [63:0] alu_res, fpu_res, alu_res1, fpu_res1;
+    wire alu_busy, alu_done, fpu_busy, fpu_done;
+    wire alu_busy1, alu_done1, fpu_busy1, fpu_done1;
+
+    wire [63:0] fpu_s1_res, fpu_s2_res, fpu_s3_res, fpu_s4_res;
+    wire [5:0] fpu_s1_rd, fpu_s2_rd, fpu_s3_rd, fpu_s4_rd;
+    wire fpu_s1_v, fpu_s2_v, fpu_s3_v, fpu_s4_v;
+    wire [5:0] fpu_phys_rd_out;
+
+    wire [63:0] fpu1_s1_res, fpu1_s2_res, fpu1_s3_res, fpu1_s4_res;
+    wire [5:0] fpu1_s1_rd, fpu1_s2_rd, fpu1_s3_rd, fpu1_s4_rd;
+    wire fpu1_s1_v, fpu1_s2_v, fpu1_s3_v, fpu1_s4_v;
+    wire [5:0] fpu1_phys_rd_out;
+    wire [4:0] fpu_arch_rd_out, fpu1_arch_rd_out;
+
     register_file reg_file (
         .clk(clk),
         .reset(reset),
@@ -414,12 +429,23 @@ module tinker_core (
         .phys_write_rd1(reg_write_rd1),
         .phys_write_enable0(reg_write_en),
         .phys_write_enable1(reg_write_en1),
+        // FPU Asynchronous Write Ports
+        .fpu_data0(fpu_res),
+        .fpu_data1(fpu_res1),
+        .fpu_write_rd0(fpu_phys_rd_out),
+        .fpu_write_rd1(fpu1_phys_rd_out),
+        .fpu_arch_rd0(fpu_arch_rd_out),
+        .fpu_arch_rd1(fpu1_arch_rd_out),
+        .fpu_write_enable0(fpu_done),
+        .fpu_write_enable1(fpu_done1),
         .commit_data0(commit_data0),
         .commit_data1(commit_data1),
         .commit_arch_rd0(mem_rd),
         .commit_arch_rd1(mem_rd1),
         .commit_enable0(commit_en0),
         .commit_enable1(commit_en1),
+        .commit_is_fpu0(wb_opcode >= 5'h14 && wb_opcode <= 5'h17),
+        .commit_is_fpu1(wb_opcode1 >= 5'h14 && wb_opcode1 <= 5'h17),
         .rd0_val(rd_val),
         .rs0_val(rs_val),
         .rt0_val(rt_val),
@@ -450,16 +476,13 @@ module tinker_core (
     wire [63:0] alu_input_a1 = uses_rd_as_alu_a(ex2_opcode1) ? ex2_RD_LATCH1 : ex2_A1;
     wire [63:0] alu_input_b1 = ex2_use_immediate1 ? extend_imm(ex2_opcode1, ex2_imm1) : ex2_B1;
 
-    wire [63:0] alu_res, fpu_res, alu_res1, fpu_res1;
-    wire alu_busy, alu_done, fpu_busy, fpu_done;
-    wire alu_busy1, alu_done1, fpu_busy1, fpu_done1;
 
     wire ex2_needs_alu_pipe = ex1_ex2_valid && !ex2_use_fpu_instruction && (ex2_opcode == OP_MUL || ex2_opcode == OP_DIV);
     wire ex2_needs_fpu_pipe = ex1_ex2_valid && ex2_use_fpu_instruction && writes_register(ex2_opcode);
     wire ex2_needs_alu_pipe1 = ex1_ex2_valid1 && !ex2_use_fpu_instruction1 && (ex2_opcode1 == OP_MUL || ex2_opcode1 == OP_DIV);
     wire ex2_needs_fpu_pipe1 = ex1_ex2_valid1 && ex2_use_fpu_instruction1 && writes_register(ex2_opcode1);
     wire alu_start = ex2_needs_alu_pipe && !ex2_long_op_started;
-    wire fpu_start = ex2_needs_fpu_pipe && !ex2_long_op_started;
+    wire fpu_start = ex2_needs_fpu_pipe && !ex2_long_op_started; // This will still rely on started/complete for the 1-cycle duration
     wire alu_start1 = ex2_needs_alu_pipe1 && !ex2_long_op_started1;
     wire fpu_start1 = ex2_needs_fpu_pipe1 && !ex2_long_op_started1;
 
@@ -482,9 +505,25 @@ module tinker_core (
         .a(ex2_A),
         .b(alu_input_b0),
         .op(ex2_opcode),
+        .phys_rd_in(ex2_phys_rd),
+        .arch_rd_in(ex2_rd),
         .res(fpu_res),
         .busy(fpu_busy),
-        .done(fpu_done)
+        .done(fpu_done),
+        .phys_rd_out(fpu_phys_rd_out),
+        .arch_rd_out(fpu_arch_rd_out),
+        .s1_res_out(fpu_s1_res),
+        .s2_res_out(fpu_s2_res),
+        .s3_res_out(fpu_s3_res),
+        .s4_res_out(fpu_s4_res),
+        .s1_rd_out(fpu_s1_rd),
+        .s2_rd_out(fpu_s2_rd),
+        .s3_rd_out(fpu_s3_rd),
+        .s4_rd_out(fpu_s4_rd),
+        .s1_valid(fpu_s1_v),
+        .s2_valid(fpu_s2_v),
+        .s3_valid(fpu_s3_v),
+        .s4_valid(fpu_s4_v)
     );
 
     ALU alu_inst1 (
@@ -506,9 +545,25 @@ module tinker_core (
         .a(ex2_A1),
         .b(alu_input_b1),
         .op(ex2_opcode1),
+        .phys_rd_in(ex2_phys_rd1),
+        .arch_rd_in(ex2_rd1),
         .res(fpu_res1),
         .busy(fpu_busy1),
-        .done(fpu_done1)
+        .done(fpu_done1),
+        .phys_rd_out(fpu1_phys_rd_out),
+        .arch_rd_out(fpu1_arch_rd_out),
+        .s1_res_out(fpu1_s1_res),
+        .s2_res_out(fpu1_s2_res),
+        .s3_res_out(fpu1_s3_res),
+        .s4_res_out(fpu1_s4_res),
+        .s1_rd_out(fpu1_s1_rd),
+        .s2_rd_out(fpu1_s2_rd),
+        .s3_rd_out(fpu1_s3_rd),
+        .s4_rd_out(fpu1_s4_rd),
+        .s1_valid(fpu1_s1_v),
+        .s2_valid(fpu1_s2_v),
+        .s3_valid(fpu1_s3_v),
+        .s4_valid(fpu1_s4_v)
     );
 
     wire phys_addr_is_stack = (mem_opcode == OP_CALL || mem_opcode == OP_RET);
@@ -635,25 +690,71 @@ module tinker_core (
     wire sb_full = (sb_count == 3'd4);
     wire sb_stall = ex2_mem_valid && mem_write && sb_full;
 
+    wire rs_forwardable = (rs_phys == 0) ||
+        (ex2_mem_valid && mem_phys_rd == rs_phys) ||
+        (ex2_mem_valid1 && mem_phys_rd1 == rs_phys) ||
+        (mem_wb_valid && wb_phys_rd == rs_phys) ||
+        (mem_wb_valid1 && wb_phys_rd1 == rs_phys) ||
+        (fpu_done && fpu_phys_rd_out == rs_phys) ||
+        (fpu_done1 && fpu1_phys_rd_out == rs_phys);
+    
+    wire rt_forwardable = (rt_phys == 0) ||
+        (ex2_mem_valid && mem_phys_rd == rt_phys) ||
+        (ex2_mem_valid1 && mem_phys_rd1 == rt_phys) ||
+        (mem_wb_valid && wb_phys_rd == rt_phys) ||
+        (mem_wb_valid1 && wb_phys_rd1 == rt_phys) ||
+        (fpu_done && fpu_phys_rd_out == rt_phys) ||
+        (fpu_done1 && fpu1_phys_rd_out == rt_phys);
+
+    wire rd_src_forwardable = (rd_phys == 0) ||
+        (ex2_mem_valid && mem_phys_rd == rd_phys) ||
+        (ex2_mem_valid1 && mem_phys_rd1 == rd_phys) ||
+        (mem_wb_valid && wb_phys_rd == rd_phys) ||
+        (mem_wb_valid1 && wb_phys_rd1 == rd_phys) ||
+        (fpu_done && fpu_phys_rd_out == rd_phys) ||
+        (fpu_done1 && fpu1_phys_rd_out == rd_phys);
+
+    wire rs1_forwardable = (rs1_phys == 0) ||
+        (ex2_mem_valid && mem_phys_rd == rs1_phys) ||
+        (ex2_mem_valid1 && mem_phys_rd1 == rs1_phys) ||
+        (mem_wb_valid && wb_phys_rd == rs1_phys) ||
+        (mem_wb_valid1 && wb_phys_rd1 == rs1_phys) ||
+        (fpu_done && fpu_phys_rd_out == rs1_phys) ||
+        (fpu_done1 && fpu1_phys_rd_out == rs1_phys);
+
+    wire rt1_forwardable = (rt1_phys == 0) ||
+        (ex2_mem_valid && mem_phys_rd == rt1_phys) ||
+        (ex2_mem_valid1 && mem_phys_rd1 == rt1_phys) ||
+        (mem_wb_valid && wb_phys_rd == rt1_phys) ||
+        (mem_wb_valid1 && wb_phys_rd1 == rt1_phys) ||
+        (fpu_done && fpu_phys_rd_out == rt1_phys) ||
+        (fpu_done1 && fpu1_phys_rd_out == rt1_phys);
+
+    wire rd1_src_forwardable = (rd1_phys == 0) ||
+        (ex2_mem_valid && mem_phys_rd == rd1_phys) ||
+        (ex2_mem_valid1 && mem_phys_rd1 == rd1_phys) ||
+        (mem_wb_valid && wb_phys_rd == rd1_phys) ||
+        (mem_wb_valid1 && wb_phys_rd1 == rd1_phys) ||
+        (fpu_done && fpu_phys_rd_out == rd1_phys) ||
+        (fpu_done1 && fpu1_phys_rd_out == rd1_phys);
+
     wire src_hazard0 =
         if_id_valid &&
-        ((uses_rs(opcode) && phys_busy[rs_phys]) ||
-         (uses_rt(opcode) && phys_busy[rt_phys]) ||
-         (uses_rd_source(opcode) && phys_busy[rd_phys]));
+        ((uses_rs(opcode) && rs_phys != 0 && phys_busy[rs_phys] && !rs_forwardable) ||
+         (uses_rt(opcode) && rt_phys != 0 && phys_busy[rt_phys] && !rt_forwardable) ||
+         (uses_rd_source(opcode) && rd_phys != 0 && phys_busy[rd_phys] && !rd_src_forwardable));
 
     wire src_hazard1 =
         if_id_valid1 &&
-        ((uses_rs(opcode1) && phys_busy[rs1_phys]) ||
-         (uses_rt(opcode1) && phys_busy[rt1_phys]) ||
-         (uses_rd_source(opcode1) && phys_busy[rd1_phys]));
+        ((uses_rs(opcode1) && rs1_phys != 0 && phys_busy[rs1_phys] && !rs1_forwardable) ||
+         (uses_rt(opcode1) && rt1_phys != 0 && phys_busy[rt1_phys] && !rt1_forwardable) ||
+         (uses_rd_source(opcode1) && rd1_phys != 0 && phys_busy[rd1_phys] && !rd1_src_forwardable));
 
     wire decode_hazard = src_hazard0 || src_hazard1;
 
     wire ex2_waiting_for_alu = ex2_needs_alu_pipe && (!ex2_long_op_started || !ex2_long_op_complete);
-    wire ex2_waiting_for_fpu = ex2_needs_fpu_pipe && (!ex2_long_op_started || !ex2_long_op_complete);
     wire ex2_waiting_for_alu1 = ex2_needs_alu_pipe1 && (!ex2_long_op_started1 || !ex2_long_op_complete1);
-    wire ex2_waiting_for_fpu1 = ex2_needs_fpu_pipe1 && (!ex2_long_op_started1 || !ex2_long_op_complete1);
-    wire alu_busy_stall = ex2_waiting_for_alu || ex2_waiting_for_fpu || ex2_waiting_for_alu1 || ex2_waiting_for_fpu1;
+    wire alu_busy_stall = ex2_waiting_for_alu || ex2_waiting_for_alu1;
 
     wire pipeline_stall = decode_hazard || rename_stall || sb_stall || alu_busy_stall;
     wire halt_in_ex2 = ex1_ex2_valid && (ex2_opcode == OP_PRIV) && (ex2_imm == 12'b0);
@@ -805,6 +906,7 @@ module tinker_core (
                 !ex2_mem_valid1 &&
                 !mem_wb_valid &&
                 !mem_wb_valid1 &&
+                !fpu_busy && !fpu_busy1 &&
                 !(ex2_mem_valid && mem_write)) begin
                 $display("Execution Halted.");
                 hlt <= 1'b1;
@@ -914,9 +1016,36 @@ module tinker_core (
                 ex1_predicted_taken <= if_id_predicted_taken;
                 ex1_predicted_target <= if_id_predicted_target;
                 ex1_phys_rd <= writes_register(opcode) ? alloc_phys0 : 6'b0;
+                // Forwarding for Slot 0
                 A <= rs_val;
+                if (if_id_valid && uses_rs(opcode) && rs_phys != 0) begin
+                    if (ex2_mem_valid && mem_phys_rd == rs_phys) A <= reg_write_data;
+                    else if (ex2_mem_valid1 && mem_phys_rd1 == rs_phys) A <= reg_write_data1;
+                    else if (mem_wb_valid && wb_phys_rd == rs_phys) A <= wb_alu_out;
+                    else if (mem_wb_valid1 && wb_phys_rd1 == rs_phys) A <= wb_alu_out1;
+                    else if (fpu_done && fpu_phys_rd_out == rs_phys) A <= fpu_res;
+                    else if (fpu_done1 && fpu1_phys_rd_out == rs_phys) A <= fpu_res1;
+                end
+
                 B <= rt_val;
+                if (if_id_valid && uses_rt(opcode) && rt_phys != 0) begin
+                    if (ex2_mem_valid && mem_phys_rd == rt_phys) B <= reg_write_data;
+                    else if (ex2_mem_valid1 && mem_phys_rd1 == rt_phys) B <= reg_write_data1;
+                    else if (mem_wb_valid && wb_phys_rd == rt_phys) B <= wb_alu_out;
+                    else if (mem_wb_valid1 && wb_phys_rd1 == rt_phys) B <= wb_alu_out1;
+                    else if (fpu_done && fpu_phys_rd_out == rt_phys) B <= fpu_res;
+                    else if (fpu_done1 && fpu1_phys_rd_out == rt_phys) B <= fpu_res1;
+                end
+
                 RD_LATCH <= rd_val;
+                if (if_id_valid && uses_rd_source(opcode) && rd_phys != 0) begin
+                    if (ex2_mem_valid && mem_phys_rd == rd_phys) RD_LATCH <= reg_write_data;
+                    else if (ex2_mem_valid1 && mem_phys_rd1 == rd_phys) RD_LATCH <= reg_write_data1;
+                    else if (mem_wb_valid && wb_phys_rd == rd_phys) RD_LATCH <= wb_alu_out;
+                    else if (mem_wb_valid1 && wb_phys_rd1 == rd_phys) RD_LATCH <= wb_alu_out1;
+                    else if (fpu_done && fpu_phys_rd_out == rd_phys) RD_LATCH <= fpu_res;
+                    else if (fpu_done1 && fpu1_phys_rd_out == rd_phys) RD_LATCH <= fpu_res1;
+                end
 
                 id_ex1_valid1 <= if_id_valid1 && decode_pairable_packet;
                 ex1_pc1 <= if_id_pc1;
@@ -928,9 +1057,36 @@ module tinker_core (
                 ex1_use_immediate1 <= use_immediate1;
                 ex1_use_fpu_instruction1 <= use_fpu_instruction1;
                 ex1_phys_rd1 <= writes_register(opcode1) ? alloc_phys1 : 6'b0;
+                // Forwarding for Slot 1
                 A1 <= rs1_val;
+                if (if_id_valid1 && uses_rs(opcode1) && rs1_phys != 0) begin
+                    if (ex2_mem_valid && mem_phys_rd == rs1_phys) A1 <= reg_write_data;
+                    else if (ex2_mem_valid1 && mem_phys_rd1 == rs1_phys) A1 <= reg_write_data1;
+                    else if (mem_wb_valid && wb_phys_rd == rs1_phys) A1 <= wb_alu_out;
+                    else if (mem_wb_valid1 && wb_phys_rd1 == rs1_phys) A1 <= wb_alu_out1;
+                    else if (fpu_done && fpu_phys_rd_out == rs1_phys) A1 <= fpu_res;
+                    else if (fpu_done1 && fpu1_phys_rd_out == rs1_phys) A1 <= fpu_res1;
+                end
+
                 B1 <= rt1_val;
+                if (if_id_valid1 && uses_rt(opcode1) && rt1_phys != 0) begin
+                    if (ex2_mem_valid && mem_phys_rd == rt1_phys) B1 <= reg_write_data;
+                    else if (ex2_mem_valid1 && mem_phys_rd1 == rt1_phys) B1 <= reg_write_data1;
+                    else if (mem_wb_valid && wb_phys_rd == rt1_phys) B1 <= wb_alu_out;
+                    else if (mem_wb_valid1 && wb_phys_rd1 == rt1_phys) B1 <= wb_alu_out1;
+                    else if (fpu_done && fpu_phys_rd_out == rt1_phys) B1 <= fpu_res;
+                    else if (fpu_done1 && fpu1_phys_rd_out == rt1_phys) B1 <= fpu_res1;
+                end
+
                 RD_LATCH1 <= rd1_val;
+                if (if_id_valid1 && uses_rd_source(opcode1) && rd1_phys != 0) begin
+                    if (ex2_mem_valid && mem_phys_rd == rd1_phys) RD_LATCH1 <= reg_write_data;
+                    else if (ex2_mem_valid1 && mem_phys_rd1 == rd1_phys) RD_LATCH1 <= reg_write_data1;
+                    else if (mem_wb_valid && wb_phys_rd == rd1_phys) RD_LATCH1 <= wb_alu_out;
+                    else if (mem_wb_valid1 && wb_phys_rd1 == rd1_phys) RD_LATCH1 <= wb_alu_out1;
+                    else if (fpu_done && fpu_phys_rd_out == rd1_phys) RD_LATCH1 <= fpu_res;
+                    else if (fpu_done1 && fpu1_phys_rd_out == rd1_phys) RD_LATCH1 <= fpu_res1;
+                end
             end
 
             if (mem_control_flush || ex_control_flush || halt_in_ex2 || halt_pending) begin
@@ -1045,7 +1201,9 @@ module tinker_core (
                     ALUOut1 <= 64'b0;
                     FPUOut1 <= 64'b0;
                 end else if (sb_stall || alu_busy_stall) begin
+                    // Case where we are stalling due to integer MUL/DIV
                 end else begin
+                    // MOVE TO MEM
                     ex2_mem_valid <= ex1_ex2_valid;
                     mem_pc <= ex2_pc;
                     mem_opcode <= ex2_opcode;
@@ -1157,10 +1315,15 @@ module tinker_core (
                     temp_free[old_amt1 - 6'd32] <= 1'b1;
             end
 
-            if (mem_wb_valid)
+            if (mem_wb_valid && (wb_opcode < 5'h14 || wb_opcode > 5'h17))
                 phys_busy[wb_phys_rd] <= 1'b0;
-            if (mem_wb_valid1)
+            if (mem_wb_valid1 && (wb_opcode1 < 5'h14 || wb_opcode1 > 5'h17))
                 phys_busy[wb_phys_rd1] <= 1'b0;
+
+            if (fpu_done)
+                phys_busy[fpu_phys_rd_out] <= 1'b0;
+            if (fpu_done1)
+                phys_busy[fpu1_phys_rd_out] <= 1'b0;
 
             if (mem_control_flush || ex_control_flush || halt_in_ex2 || halt_pending) begin
                 temp_free <= 32'hFFFF_FFFF;
