@@ -92,7 +92,9 @@ module FPU (
     reg [56:0] addsub_sum_tmp;
     reg [55:0] addsub_diff_tmp;
     reg [105:0] mul_prod_tmp;
-    reg [105:0] div_quot_tmp;
+    reg [55:0] div_quot_tmp;
+    reg [108:0] div_num_tmp;
+    reg [52:0] div_rem_tmp;
     reg [106:0] mant_norm_tmp;
     reg [11:0] exp_norm_tmp;
     reg sign_norm_tmp;
@@ -192,16 +194,10 @@ module FPU (
                             s4_zero_result <= 1'b0;
                         end
                         OP_DIVF: begin
-                            lz = 0;
-                            while ((mant_norm_tmp[52] == 1'b0) && (exp_norm_tmp > 0) && (mant_norm_tmp != 0)) begin
-                                mant_norm_tmp = mant_norm_tmp << 1;
-                                exp_norm_tmp = exp_norm_tmp - 12'd1;
-                                lz = lz + 1;
-                            end
-                            s4_mant <= mant_norm_tmp[52:0];
-                            s4_guard <= mant_norm_tmp[51];
-                            s4_round <= mant_norm_tmp[50];
-                            s4_sticky <= |mant_norm_tmp[49:0];
+                            s4_mant <= mant_norm_tmp[55:3];
+                            s4_guard <= mant_norm_tmp[2];
+                            s4_round <= mant_norm_tmp[1];
+                            s4_sticky <= mant_norm_tmp[0];
                             s4_exp <= exp_norm_tmp;
                             s4_sign <= sign_norm_tmp;
                             s4_zero_result <= 1'b0;
@@ -310,9 +306,18 @@ module FPU (
                             s3_mant_ext <= 107'b0;
                             s3_zero_result <= 1'b1;
                         end else begin
-                            div_quot_tmp = ({53'b0, s2_div_mant_a} << 52) / s2_div_mant_b;
+                            if (s2_div_mant_a >= s2_div_mant_b) begin
+                                div_num_tmp = {s2_div_mant_a, 56'b0} >> 1;
+                                s3_exp <= s2_div_exp;
+                            end else begin
+                                div_num_tmp = {s2_div_mant_a, 56'b0};
+                                s3_exp <= s2_div_exp - 12'd1;
+                            end
+                            div_quot_tmp = div_num_tmp / s2_div_mant_b;
+                            div_rem_tmp = div_num_tmp % s2_div_mant_b;
+                            if (div_rem_tmp != 0)
+                                div_quot_tmp[0] = 1'b1;
                             s3_sign <= s2_div_sign;
-                            s3_exp <= s2_div_exp;
                             s3_mant_ext <= {1'b0, div_quot_tmp};
                             s3_zero_result <= 1'b0;
                         end

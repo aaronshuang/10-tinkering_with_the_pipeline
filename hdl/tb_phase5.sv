@@ -19,6 +19,7 @@ module tb_phase5;
     localparam [63:0] FP_8P0  = 64'h4020000000000000;
     localparam [63:0] FP_20P0 = 64'h4034000000000000;
     localparam [63:0] FP_5P0  = 64'h4014000000000000;
+    localparam [63:0] FP_4_OVER_3 = 64'h3FF5555555555555;
 
     // Instruction sequence
     initial begin
@@ -38,8 +39,10 @@ module tb_phase5;
         write_inst(16'h2014, 5'h16, 14, 10, 11, 12'd0);
         // [0x2018] DIVF r15, r16, r17 (r15 = 5.0)
         write_inst(16'h2018, 5'h17, 15, 16, 17, 12'd0);
-        // [0x201C] PRIV 0 (HALT)
-        write_inst(16'h201C, 5'h0F, 0, 0, 0, 12'd0);
+        // [0x201C] DIVF r18, r19, r20 (r18 = 4.0 / 3.0, rounding-sensitive)
+        write_inst(16'h201C, 5'h17, 18, 19, 20, 12'd0);
+        // [0x2020] PRIV 0 (HALT)
+        write_inst(16'h2020, 5'h0F, 0, 0, 0, 12'd0);
     end
 
     task write_inst;
@@ -85,15 +88,17 @@ module tb_phase5;
         uut.reg_file.registers[11] = FP_2P0;
         uut.reg_file.registers[16] = FP_20P0;
         uut.reg_file.registers[17] = FP_4P0;
+        uut.reg_file.registers[19] = FP_4P0;
+        uut.reg_file.registers[20] = FP_3P0;
 
         while (!hlt && cycles < 200) begin
             @(posedge clk);
             cycles = cycles + 1;
-            if (uut.fpu_inst.s1_valid) saw_fpu_s1 = 1;
-            if (uut.fpu_inst.s2_valid) saw_fpu_s2 = 1;
-            if (uut.fpu_inst.s3_valid) saw_fpu_s3 = 1;
-            if (uut.fpu_inst.s4_valid) saw_fpu_s4 = 1;
-            if (uut.fpu_inst.s5_valid) saw_fpu_s5 = 1;
+            if (uut.fpu.s1_valid) saw_fpu_s1 = 1;
+            if (uut.fpu.s2_valid) saw_fpu_s2 = 1;
+            if (uut.fpu.s3_valid) saw_fpu_s3 = 1;
+            if (uut.fpu.s4_valid) saw_fpu_s4 = 1;
+            if (uut.fpu.s5_valid) saw_fpu_s5 = 1;
             if (uut.fpu_busy) fpu_busy_cycles = fpu_busy_cycles + 1;
             if (uut.alu_busy_stall) $display("Cycle %d: Stall due to ALU/FPU Busy", cycles);
         end
@@ -106,6 +111,7 @@ module tb_phase5;
         $display("[RESULT] r13 (4.0 - 2.0) = %h (expected %h)", uut.reg_file.registers[13], FP_2P0);
         $display("[RESULT] r14 (4.0 * 2.0) = %h (expected %h)", uut.reg_file.registers[14], FP_8P0);
         $display("[RESULT] r15 (20.0 / 4.0) = %h (expected %h)", uut.reg_file.registers[15], FP_5P0);
+        $display("[RESULT] r18 (4.0 / 3.0) = %h (expected %h)", uut.reg_file.registers[18], FP_4_OVER_3);
         $display("[RESULT] FPU busy cycles observed = %0d", fpu_busy_cycles);
         $display("[RESULT] FPU stages seen = %0d%0d%0d%0d%0d", saw_fpu_s1, saw_fpu_s2, saw_fpu_s3, saw_fpu_s4, saw_fpu_s5);
         $display("Total cycles: %d", cycles);
@@ -117,6 +123,7 @@ module tb_phase5;
             uut.reg_file.registers[13] == FP_2P0 &&
             uut.reg_file.registers[14] == FP_8P0 &&
             uut.reg_file.registers[15] == FP_5P0 &&
+            uut.reg_file.registers[18] == FP_4_OVER_3 &&
             saw_fpu_s1 && saw_fpu_s2 && saw_fpu_s3 && saw_fpu_s4 && saw_fpu_s5 &&
             cycles > 20 &&
             cycles < 200) begin

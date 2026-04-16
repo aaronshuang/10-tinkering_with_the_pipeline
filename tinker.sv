@@ -404,7 +404,7 @@ module tinker_core (
         .done(alu_done)
     );
 
-    FPU fpu_inst (
+    FPU fpu (
         .clk(clk),
         .reset(reset),
         .start(fpu_start),
