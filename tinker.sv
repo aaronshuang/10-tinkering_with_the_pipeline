@@ -128,6 +128,7 @@ module tinker_core (
     endfunction
 
     reg [63:0] pc;
+    integer i;
 
     reg if_id_valid;
     reg [63:0] if_id_pc;
@@ -143,6 +144,8 @@ module tinker_core (
     reg ex_use_immediate;
     reg ex_use_fpu_instruction;
     reg ex_is_branch;
+    reg ex_predicted_taken;
+    reg [63:0] ex_predicted_target;
 
     reg ex_mem_valid;
     reg [63:0] mem_pc;
@@ -322,6 +325,25 @@ module tinker_core (
     reg take_branch;
     reg [63:0] branch_target;
 
+    // Phase 3.5: Dynamic Branch Predictor
+    reg [1:0]  bht       [0:63]; // 2-bit saturating counters
+    reg [63:0] btb_tgt   [0:63]; // Branch Target Buffer
+    reg [51:0] btb_tag   [0:63]; // BTB tags (using bits 63:12)
+    reg [63:0] btb_valid;        // Valid bit for each BTB entry
+
+    // Prediction lookup (Fetch stage)
+    wire [5:0] pred_idx = pc[7:2];
+    wire [51:0] curr_tag = pc[63:12];
+    wire btb_hit = btb_valid[pred_idx] && (btb_tag[pred_idx] == curr_tag);
+    wire predict_takenRaw = btb_hit && (bht[pred_idx] >= 2'b10);
+    
+    // Predicted next PC
+    wire [63:0] predicted_target = btb_tgt[pred_idx];
+    wire [63:0] next_pc_predict = predict_takenRaw ? predicted_target : (pc + 64'd4);
+
+    reg if_id_predicted_taken;
+    reg [63:0] if_id_predicted_target;
+
     always @(*) begin
         take_branch = 1'b0;
         branch_target = 64'b0;
@@ -368,7 +390,10 @@ module tinker_core (
 
     wire hazard_stall = if_id_valid && (lu_rs || lu_rt || lu_rd);
     wire halt_in_ex = id_ex_valid && (ex_opcode == OP_PRIV) && (ex_imm == 12'b0);
-    wire ex_control_flush = id_ex_valid && ex_is_branch && (ex_opcode != OP_RET) && take_branch;
+
+    // Dynamic resolution in EX
+    wire ex_mispredicted = (take_branch != ex_predicted_taken) || (take_branch && (branch_target != ex_predicted_target));
+    wire ex_control_flush = id_ex_valid && ex_is_branch && (ex_opcode != OP_RET) && ex_mispredicted;
     wire mem_control_flush = ex_mem_valid && (mem_opcode == OP_RET);
 
     always @(posedge clk) begin
@@ -390,6 +415,16 @@ module tinker_core (
             ex_use_immediate <= 1'b0;
             ex_use_fpu_instruction <= 1'b0;
             ex_is_branch <= 1'b0;
+            ex_predicted_taken <= 1'b0;
+            ex_predicted_target <= 64'b0;
+
+            // Reset predictor tables
+            btb_valid <= 64'b0;
+            for (i = 0; i < 64; i = i + 1) begin
+                bht[i] <= 2'b01; // Initialize to Weakly Not Taken
+                btb_tgt[i] <= 64'b0;
+                btb_tag[i] <= 52'b0;
+            end
 
             ex_mem_valid <= 1'b0;
             mem_pc <= 64'b0;
@@ -423,19 +458,23 @@ module tinker_core (
             if (mem_control_flush) begin
                 pc <= mem_read_data;
             end else if (ex_control_flush) begin
-                pc <= branch_target;
+                pc <= take_branch ? branch_target : (ex_pc + 64'd4);
             end else if (!hazard_stall && !halt_in_ex) begin
-                pc <= pc + 64'd4;
+                pc <= next_pc_predict;
             end
 
             if (mem_control_flush || ex_control_flush || halt_in_ex) begin
                 if_id_valid <= 1'b0;
                 if_id_pc <= 64'b0;
                 if_id_instr <= 32'b0;
+                if_id_predicted_taken <= 1'b0;
+                if_id_predicted_target <= 64'b0;
             end else if (!hazard_stall) begin
                 if_id_valid <= 1'b1;
                 if_id_pc <= pc;
                 if_id_instr <= {memory.bytes[pc+3], memory.bytes[pc+2], memory.bytes[pc+1], memory.bytes[pc]};
+                if_id_predicted_taken <= predict_takenRaw;
+                if_id_predicted_target <= predicted_target;
             end
 
             if (mem_control_flush || ex_control_flush || hazard_stall || halt_in_ex) begin
@@ -449,6 +488,8 @@ module tinker_core (
                 ex_use_immediate <= 1'b0;
                 ex_use_fpu_instruction <= 1'b0;
                 ex_is_branch <= 1'b0;
+                ex_predicted_taken <= 1'b0;
+                ex_predicted_target <= 64'b0;
                 A <= 64'b0;
                 B <= 64'b0;
                 RD_LATCH <= 64'b0;
@@ -463,6 +504,8 @@ module tinker_core (
                 ex_use_immediate <= use_immediate;
                 ex_use_fpu_instruction <= use_fpu_instruction;
                 ex_is_branch <= is_branch;
+                ex_predicted_taken <= if_id_predicted_taken;
+                ex_predicted_target <= if_id_predicted_target;
                 A <= rs_val;
                 B <= rt_val;
                 RD_LATCH <= rd_val;
@@ -518,6 +561,23 @@ module tinker_core (
                 wb_alu_out <= 64'b0;
                 wb_fpu_out <= 64'b0;
                 MDR <= mem_read_data;
+            end
+
+            // Predictor Training (Update BHT and BTB)
+            if (id_ex_valid && ex_is_branch && ex_opcode != OP_RET) begin
+                // Update BHT counter
+                if (take_branch) begin
+                    if (bht[ex_pc[7:2]] != 2'b11) bht[ex_pc[7:2]] <= bht[ex_pc[7:2]] + 2'b01;
+                end else begin
+                    if (bht[ex_pc[7:2]] != 2'b00) bht[ex_pc[7:2]] <= bht[ex_pc[7:2]] - 2'b01;
+                end
+                
+                // Update BTB entry if taken
+                if (take_branch) begin
+                    btb_tgt[ex_pc[7:2]] <= branch_target;
+                    btb_tag[ex_pc[7:2]] <= ex_pc[63:12];
+                    btb_valid[ex_pc[7:2]] <= 1'b1;
+                end
             end
         end
     end
