@@ -180,7 +180,8 @@ module tb_phase2;
     // Monitor pipeline hazard / flush signals
     always @(posedge clk) begin
         if (!reset && !uut.hlt) begin
-            if (uut.hazard_stall)     saw_hazard_stall <= 1'b1;
+            if (uut.pipeline_stall)
+                saw_hazard_stall <= 1'b1;
             if (uut.ex_control_flush) saw_ex_flush     <= 1'b1;
         end
     end
@@ -217,7 +218,7 @@ module tb_phase2;
 
         // Segment 4 – store-data forwarding  (forwarded_A → mem_store_data)
         write_inst(16'h2028, OP_ADDI,  9,  0,  0, 12'h021); // r9  = 33
-        write_inst(16'h202C, OP_MOV_SM, 0, 9,  0, 12'h100); // mem[0+0x100] = r9 = 33  EX/MEM fwd r9
+        write_inst(16'h202C, OP_MOV_SM, 0, 9,  0, 12'h100); // mem[0+0x100] = r9 = 33
         write_inst(16'h2030, OP_MOV_ML,10,  0,  0, 12'h100); // r10 = mem[0x100] = 33
 
         // Build BRNZ target: r11 = 0x204C

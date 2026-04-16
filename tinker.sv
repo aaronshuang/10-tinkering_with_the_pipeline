@@ -134,20 +134,34 @@ module tinker_core (
     reg [63:0] if_id_pc;
     reg [31:0] if_id_instr;
 
-    reg id_ex_valid;
-    reg [63:0] ex_pc;
-    reg [4:0] ex_opcode;
-    reg [4:0] ex_rd;
-    reg [4:0] ex_rs;
-    reg [4:0] ex_rt;
-    reg [11:0] ex_imm;
-    reg ex_use_immediate;
-    reg ex_use_fpu_instruction;
-    reg ex_is_branch;
-    reg ex_predicted_taken;
-    reg [63:0] ex_predicted_target;
+    reg id_ex1_valid;
+    reg [63:0] ex1_pc;
+    reg [4:0] ex1_opcode;
+    reg [4:0] ex1_rd;
+    reg [4:0] ex1_rs;
+    reg [4:0] ex1_rt;
+    reg [11:0] ex1_imm;
+    reg ex1_use_immediate;
+    reg ex1_use_fpu_instruction;
+    reg ex1_is_branch;
+    reg ex1_predicted_taken;
+    reg [63:0] ex1_predicted_target;
 
-    reg ex_mem_valid;
+    reg ex1_ex2_valid;
+    reg [63:0] ex2_pc;
+    reg [4:0] ex2_opcode;
+    reg [4:0] ex2_rd;
+    reg [63:0] ex2_A;
+    reg [63:0] ex2_B;
+    reg [63:0] ex2_RD_LATCH;
+    reg [11:0] ex2_imm;
+    reg ex2_use_immediate;
+    reg ex2_use_fpu_instruction;
+    reg ex2_is_branch;
+    reg ex2_predicted_taken;
+    reg [63:0] ex2_predicted_target;
+
+    reg ex2_mem_valid;
     reg [63:0] mem_pc;
     reg [4:0] mem_opcode;
     reg [4:0] mem_rd;
@@ -215,92 +229,6 @@ module tinker_core (
     // Forward-declared so forwarding muxes can reference it before the memory instantiation
     wire [63:0] mem_read_data;
 
-    // ---------------------------------------------------------------
-    // Forwarding network (Phase 2)
-    // Priority (highest → lowest): EX/MEM non-load, EX/MEM load, MEM/WB
-    // ---------------------------------------------------------------
-
-    // Forwarded result from MEM stage (non-load: ALUOut/FPUOut; load: mem_read_data)
-    wire [63:0] fwd_val_ex_mem =
-        (mem_opcode >= OP_ADDF && mem_opcode <= OP_DIVF) ? FPUOut : ALUOut;
-
-    // Forwarded result from WB stage
-    wire [63:0] fwd_val_mem_wb =
-        (wb_opcode == OP_MOV_ML)                        ? MDR        :
-        (wb_opcode >= OP_ADDF && wb_opcode <= OP_DIVF)  ? wb_fpu_out :
-                                                           wb_alu_out;
-
-    // --- forwarded_A (rs operand) ---
-    wire fwd_A_exmem_nl = id_ex_valid && ex_mem_valid
-                          && writes_register(mem_opcode) && (mem_opcode != OP_MOV_ML)
-                          && uses_rs(ex_opcode) && (ex_rs == mem_rd);
-    wire fwd_A_exmem_ld = id_ex_valid && ex_mem_valid
-                          && (mem_opcode == OP_MOV_ML)
-                          && uses_rs(ex_opcode) && (ex_rs == mem_rd);
-    wire fwd_A_wb       = id_ex_valid && mem_wb_valid
-                          && writes_register(wb_opcode)
-                          && uses_rs(ex_opcode) && (ex_rs == wb_rd);
-
-    wire [63:0] forwarded_A =
-        fwd_A_exmem_nl ? fwd_val_ex_mem :
-        fwd_A_exmem_ld ? mem_read_data  :
-        fwd_A_wb       ? fwd_val_mem_wb :
-                         A;
-
-    // --- forwarded_B (rt operand) ---
-    wire fwd_B_exmem_nl = id_ex_valid && ex_mem_valid
-                          && writes_register(mem_opcode) && (mem_opcode != OP_MOV_ML)
-                          && uses_rt(ex_opcode) && (ex_rt == mem_rd);
-    wire fwd_B_exmem_ld = id_ex_valid && ex_mem_valid
-                          && (mem_opcode == OP_MOV_ML)
-                          && uses_rt(ex_opcode) && (ex_rt == mem_rd);
-    wire fwd_B_wb       = id_ex_valid && mem_wb_valid
-                          && writes_register(wb_opcode)
-                          && uses_rt(ex_opcode) && (ex_rt == wb_rd);
-
-    wire [63:0] forwarded_B =
-        fwd_B_exmem_nl ? fwd_val_ex_mem :
-        fwd_B_exmem_ld ? mem_read_data  :
-        fwd_B_wb       ? fwd_val_mem_wb :
-                         B;
-
-    // --- forwarded_RD (rd used as source) ---
-    wire fwd_RD_exmem_nl = id_ex_valid && ex_mem_valid
-                           && writes_register(mem_opcode) && (mem_opcode != OP_MOV_ML)
-                           && uses_rd_source(ex_opcode) && (ex_rd == mem_rd);
-    wire fwd_RD_exmem_ld = id_ex_valid && ex_mem_valid
-                           && (mem_opcode == OP_MOV_ML)
-                           && uses_rd_source(ex_opcode) && (ex_rd == mem_rd);
-    wire fwd_RD_wb       = id_ex_valid && mem_wb_valid
-                           && writes_register(wb_opcode)
-                           && uses_rd_source(ex_opcode) && (ex_rd == wb_rd);
-
-    wire [63:0] forwarded_RD =
-        fwd_RD_exmem_nl ? fwd_val_ex_mem :
-        fwd_RD_exmem_ld ? mem_read_data  :
-        fwd_RD_wb       ? fwd_val_mem_wb :
-                          RD_LATCH;
-
-    // ALU / FPU use forwarded operands
-    wire [63:0] alu_input_a = uses_rd_as_alu_a(ex_opcode) ? forwarded_RD : forwarded_A;
-    wire [63:0] alu_input_b = ex_use_immediate ? extend_imm(ex_opcode, ex_imm) : forwarded_B;
-    wire [63:0] alu_res;
-    wire [63:0] fpu_res;
-
-    ALU alu (
-        .a(alu_input_a),
-        .b(alu_input_b),
-        .op(ex_opcode),
-        .res(alu_res)
-    );
-
-    FPU fpu (
-        .a(forwarded_A),
-        .b(alu_input_b),
-        .op(ex_opcode),
-        .res(fpu_res)
-    );
-
     // --- Phase 3.5: Dynamic Branch Predictor State ---
     reg [1:0]  bht       [0:63]; // 2-bit saturating counters
     reg [63:0] btb_tgt   [0:63]; // Branch Target Buffer
@@ -315,12 +243,32 @@ module tinker_core (
     reg [1:0]  sb_tail;
     reg [2:0]  sb_count;
 
-    // --- Phase 4: Store-to-Load Forwarding (SLF) Logic ---
+    // --- Architecture Constants & Wire Helpers ---
     wire [63:0] stack_addr = r31_val - 64'd8;
-    wire [63:0] mem_addr = (mem_opcode == OP_CALL || mem_opcode == OP_RET) ? stack_addr : ALUOut;
-    wire [63:0] mem_wdata = (mem_opcode == OP_CALL) ? (mem_pc + 64'd4) : mem_store_data;
-    wire mem_read = ex_mem_valid && (mem_opcode == OP_MOV_ML || mem_opcode == OP_RET);
-    wire mem_write = ex_mem_valid && (mem_opcode == OP_MOV_SM || mem_opcode == OP_CALL);
+
+    // --- ALU / FPU Calculations (EX2 Stage) ---
+    wire [63:0] alu_input_a = uses_rd_as_alu_a(ex2_opcode) ? ex2_RD_LATCH : ex2_A;
+    wire [63:0] alu_input_b = ex2_use_immediate ? extend_imm(ex2_opcode, ex2_imm) : ex2_B;
+    wire [63:0] alu_res;
+    wire [63:0] fpu_res;
+
+    ALU alu (
+        .a(alu_input_a),
+        .b(alu_input_b),
+        .op(ex2_opcode),
+        .res(alu_res)
+    );
+
+    FPU fpu (
+        .a(ex2_A),
+        .b(alu_input_b),
+        .op(ex2_opcode),
+        .res(fpu_res)
+    );
+
+    // --- Store-to-Load Forwarding (SLF) Logic ---
+    wire phys_addr_is_stack = (mem_opcode == OP_CALL || mem_opcode == OP_RET);
+    wire [63:0] mem_addr = phys_addr_is_stack ? stack_addr : ALUOut;
 
     // SLF logic to find newest matching SB entry
     wire slf_hit0 = sb_valid[0] && (sb_addr[0] == mem_addr);
@@ -342,22 +290,54 @@ module tinker_core (
 
     wire [63:0] phys_mem_read_data = memory.read_data;
     wire [63:0] forwarded_mem_read_data = slf_hit ? slf_data : phys_mem_read_data;
+    
+    // --- Phase 5: Forwarding Network ---
+    // Priority (highest → lowest): EX2, MEM, WB
+    // ---------------------------------------------------------------
+
+    // Forwarded result from EX2 stage
+    wire [63:0] fwd_val_ex2 = (ex2_opcode >= OP_ADDF && ex2_opcode <= OP_DIVF) ? fpu_res : alu_res;
+
+    // Forwarded result from MEM stage
+    wire [63:0] fwd_val_ex2_mem = (mem_opcode == OP_MOV_ML) ? forwarded_mem_read_data : (mem_opcode >= OP_ADDF && mem_opcode <= OP_DIVF) ? FPUOut : ALUOut;
+
+    // Forwarded result from WB stage
+    wire [63:0] fwd_val_mem_wb = (wb_opcode == OP_MOV_ML) ? MDR : (wb_opcode >= OP_ADDF && wb_opcode <= OP_DIVF) ? wb_fpu_out : wb_alu_out;
+
+    // --- forwarded_A (rs operand) ---
+    wire fwd_A_ex2   = id_ex1_valid && ex1_ex2_valid && writes_register(ex2_opcode) && (ex2_opcode != OP_MOV_ML) && uses_rs(ex1_opcode) && (ex1_rs == ex2_rd);
+    wire fwd_A_mem   = id_ex1_valid && ex2_mem_valid && writes_register(mem_opcode) && uses_rs(ex1_opcode) && (ex1_rs == mem_rd);
+    wire fwd_A_wb    = id_ex1_valid && mem_wb_valid && writes_register(wb_opcode) && uses_rs(ex1_opcode) && (ex1_rs == wb_rd);
+
+    wire [63:0] forwarded_A =
+        fwd_A_ex2     ? fwd_val_ex2     :
+        fwd_A_mem     ? fwd_val_ex2_mem :
+        fwd_A_wb      ? fwd_val_mem_wb  :
+                        A;
+
+    // --- forwarded_B (rt operand) ---
+    wire fwd_B_ex2   = id_ex1_valid && ex1_ex2_valid && writes_register(ex2_opcode) && (ex2_opcode != OP_MOV_ML) && uses_rt(ex1_opcode) && (ex1_rt == ex2_rd);
+    wire fwd_B_mem   = id_ex1_valid && ex2_mem_valid && writes_register(mem_opcode) && uses_rt(ex1_opcode) && (ex1_rt == mem_rd);
+    wire fwd_B_wb    = id_ex1_valid && mem_wb_valid && writes_register(wb_opcode) && uses_rt(ex1_opcode) && (ex1_rt == wb_rd);
+
+    wire [63:0] forwarded_B =
+        fwd_B_ex2     ? fwd_val_ex2     :
+        fwd_B_mem     ? fwd_val_ex2_mem :
+        fwd_B_wb      ? fwd_val_mem_wb  :
+                        B;
+
+    // --- forwarded_RD (rd used as source) ---
+    wire fwd_RD_ex2  = id_ex1_valid && ex1_ex2_valid && writes_register(ex2_opcode) && (ex2_opcode != OP_MOV_ML) && uses_rd_source(ex1_opcode) && (ex1_rd == ex2_rd);
+    wire fwd_RD_mem  = id_ex1_valid && ex2_mem_valid && writes_register(mem_opcode) && uses_rd_source(ex1_opcode) && (ex1_rd == mem_rd);
+    wire fwd_RD_wb   = id_ex1_valid && mem_wb_valid && writes_register(wb_opcode) && uses_rd_source(ex1_opcode) && (ex1_rd == wb_rd);
+
+    wire [63:0] forwarded_RD =
+        fwd_RD_ex2    ? fwd_val_ex2     :
+        fwd_RD_mem    ? fwd_val_ex2_mem :
+        fwd_RD_wb     ? fwd_val_mem_wb  :
+                        RD_LATCH;
 
     // --- Physical Memory Interface ---
-    wire sb_retire_ready = (sb_count > 0) && !mem_read;
-    wire [63:0] phys_addr = mem_read ? mem_addr : sb_addr[sb_head];
-
-    memory memory (
-        .clk(clk),
-        .addr(phys_addr),
-        .write_data(sb_data[sb_head]),
-        .mem_write(sb_retire_ready),
-        .mem_read(mem_read),
-        .read_data(mem_read_data)
-    );
-
-    assign reg_write_en = ex_mem_valid && writes_register(mem_opcode);
-    assign reg_write_rd = mem_rd;
     assign reg_write_data = (mem_opcode == OP_MOV_ML) ? forwarded_mem_read_data :
                             (mem_opcode >= OP_ADDF && mem_opcode <= OP_DIVF) ? FPUOut :
                             ALUOut;
@@ -376,60 +356,80 @@ module tinker_core (
     reg if_id_predicted_taken;
     reg [63:0] if_id_predicted_target;
 
+    // --- Final Data Logic (Memory Interface) ---
+    wire [63:0] mem_wdata = (mem_opcode == OP_CALL) ? (mem_pc + 64'd4) : mem_store_data;
+    wire mem_read = ex2_mem_valid && (mem_opcode == OP_MOV_ML || mem_opcode == OP_RET);
+    wire mem_write = ex2_mem_valid && (mem_opcode == OP_MOV_SM || mem_opcode == OP_CALL);
+    wire sb_retire_ready = (sb_count > 0) && !mem_read;
+    wire [63:0] phys_addr = mem_read ? mem_addr : sb_addr[sb_head];
+
+    memory memory (
+        .clk(clk),
+        .addr(phys_addr),
+        .write_data(sb_data[sb_head]),
+        .mem_write(sb_retire_ready),
+        .mem_read(mem_read),
+        .read_data(mem_read_data)
+    );
+
+    assign reg_write_en = ex2_mem_valid && writes_register(mem_opcode);
+    assign reg_write_rd = mem_rd;
+
     always @(*) begin
         take_branch = 1'b0;
         branch_target = 64'b0;
 
-        if (id_ex_valid && ex_is_branch) begin
-            case (ex_opcode)
+        if (ex1_ex2_valid && ex2_is_branch) begin
+            case (ex2_opcode)
                 OP_BR: begin
                     take_branch = 1'b1;
-                    branch_target = forwarded_RD;
+                    branch_target = ex2_RD_LATCH;
                 end
                 OP_BRR_R: begin
                     take_branch = 1'b1;
-                    branch_target = ex_pc + forwarded_RD;
+                    branch_target = ex2_pc + ex2_RD_LATCH;
                 end
                 OP_BRR_L: begin
                     take_branch = 1'b1;
-                    branch_target = ex_pc + {{52{ex_imm[11]}}, ex_imm};
+                    branch_target = ex2_pc + {{52{ex2_imm[11]}}, ex2_imm};
                 end
                 OP_BRNZ: begin
-                    if (forwarded_A != 0) begin
+                    if (ex2_A != 0) begin
                         take_branch = 1'b1;
-                        branch_target = forwarded_RD;
+                        branch_target = ex2_RD_LATCH;
                     end
                 end
                 OP_CALL: begin
                     take_branch = 1'b1;
-                    branch_target = forwarded_RD;
+                    branch_target = ex2_RD_LATCH;
                 end
                 OP_BRGT: begin
-                    if ($signed(forwarded_A) > $signed(forwarded_B)) begin
+                    if ($signed(ex2_A) > $signed(ex2_B)) begin
                         take_branch = 1'b1;
-                        branch_target = forwarded_RD;
+                        branch_target = ex2_RD_LATCH;
                     end
                 end
             endcase
         end
     end
 
-    // Load-use hazard: a load in EX whose result is needed by the instruction
-    // currently in ID.  All other RAW hazards are resolved by forwarding.
-    wire lu_rs = uses_rs(opcode)        && id_ex_valid && (ex_opcode == OP_MOV_ML) && (rs == ex_rd);
-    wire lu_rt = uses_rt(opcode)        && id_ex_valid && (ex_opcode == OP_MOV_ML) && (rt == ex_rd);
-    wire lu_rd = uses_rd_source(opcode) && id_ex_valid && (ex_opcode == OP_MOV_ML) && (rd == ex_rd);
+    // --- Hazard Detection (6-stage) ---
+    // Load-use: An instruction in EX1 needs a result from a Load currently in EX2.
+    // The Load result won't be ready until it reaches the MEM stage.
+    wire lu_rs = id_ex1_valid && uses_rs(ex1_opcode)        && ex1_ex2_valid && (ex2_opcode == OP_MOV_ML) && (ex1_rs == ex2_rd);
+    wire lu_rt = id_ex1_valid && uses_rt(ex1_opcode)        && ex1_ex2_valid && (ex2_opcode == OP_MOV_ML) && (ex1_rt == ex2_rd);
+    wire lu_rd = id_ex1_valid && uses_rd_source(ex1_opcode) && ex1_ex2_valid && (ex2_opcode == OP_MOV_ML) && (ex1_rd == ex2_rd);
 
     wire sb_full = (sb_count == 3'd4);
-    wire sb_stall = ex_mem_valid && mem_write && sb_full;
+    wire sb_stall = ex2_mem_valid && mem_write && sb_full;
 
-    wire hazard_stall = (if_id_valid && (lu_rs || lu_rt || lu_rd)) || sb_stall;
-    wire halt_in_ex = id_ex_valid && (ex_opcode == OP_PRIV) && (ex_imm == 12'b0);
+    wire pipeline_stall = lu_rs || lu_rt || lu_rd || sb_stall;
+    wire halt_in_ex2 = ex1_ex2_valid && (ex2_opcode == OP_PRIV) && (ex2_imm == 12'b0);
 
-    // Dynamic resolution in EX
-    wire ex_mispredicted = (take_branch != ex_predicted_taken) || (take_branch && (branch_target != ex_predicted_target));
-    wire ex_control_flush = id_ex_valid && ex_is_branch && (ex_opcode != OP_RET) && ex_mispredicted;
-    wire mem_control_flush = ex_mem_valid && (mem_opcode == OP_RET);
+    // Dynamic resolution in EX2
+    wire ex_mispredicted = (take_branch != ex2_predicted_taken) || (take_branch && (branch_target != ex2_predicted_target));
+    wire ex_control_flush = ex1_ex2_valid && ex2_is_branch && (ex2_opcode != OP_RET) && ex_mispredicted;
+    wire mem_control_flush = ex2_mem_valid && (mem_opcode == OP_RET);
 
     always @(posedge clk) begin
         if (reset) begin
@@ -440,18 +440,32 @@ module tinker_core (
             if_id_pc <= 64'b0;
             if_id_instr <= 32'b0;
 
-            id_ex_valid <= 1'b0;
-            ex_pc <= 64'b0;
-            ex_opcode <= 5'b0;
-            ex_rd <= 5'b0;
-            ex_rs <= 5'b0;
-            ex_rt <= 5'b0;
-            ex_imm <= 12'b0;
-            ex_use_immediate <= 1'b0;
-            ex_use_fpu_instruction <= 1'b0;
-            ex_is_branch <= 1'b0;
-            ex_predicted_taken <= 1'b0;
-            ex_predicted_target <= 64'b0;
+            id_ex1_valid <= 1'b0;
+            ex1_pc <= 64'b0;
+            ex1_opcode <= 5'b0;
+            ex1_rd <= 5'b0;
+            ex1_rs <= 5'b0;
+            ex1_rt <= 5'b0;
+            ex1_imm <= 12'b0;
+            ex1_use_immediate <= 1'b0;
+            ex1_use_fpu_instruction <= 1'b0;
+            ex1_is_branch <= 1'b0;
+            ex1_predicted_taken <= 1'b0;
+            ex1_predicted_target <= 64'b0;
+
+            ex1_ex2_valid <= 1'b0;
+            ex2_pc <= 64'b0;
+            ex2_opcode <= 5'b0;
+            ex2_rd <= 5'b0;
+            ex2_A <= 64'b0;
+            ex2_B <= 64'b0;
+            ex2_RD_LATCH <= 64'b0;
+            ex2_imm <= 12'b0;
+            ex2_use_immediate <= 1'b0;
+            ex2_use_fpu_instruction <= 1'b0;
+            ex2_is_branch <= 1'b0;
+            ex2_predicted_taken <= 1'b0;
+            ex2_predicted_target <= 64'b0;
 
             // Reset predictor tables
             btb_valid <= 64'b0;
@@ -461,7 +475,7 @@ module tinker_core (
                 btb_tag[i] <= 52'b0;
             end
 
-            ex_mem_valid <= 1'b0;
+            ex2_mem_valid <= 1'b0;
             mem_pc <= 64'b0;
             mem_opcode <= 5'b0;
             mem_rd <= 5'b0;
@@ -491,11 +505,12 @@ module tinker_core (
             end
         end else if (hlt) begin
             if_id_valid <= 1'b0;
-            id_ex_valid <= 1'b0;
-            ex_mem_valid <= 1'b0;
+            id_ex1_valid <= 1'b0;
+            ex1_ex2_valid <= 1'b0;
+            ex2_mem_valid <= 1'b0;
             mem_wb_valid <= 1'b0;
         end else begin
-            if (halt_in_ex) begin
+            if (halt_in_ex2 && (sb_count == 3'b0)) begin
                 $display("Execution Halted.");
                 hlt <= 1'b1;
             end
@@ -503,18 +518,19 @@ module tinker_core (
             if (mem_control_flush) begin
                 pc <= mem_read_data;
             end else if (ex_control_flush) begin
-                pc <= take_branch ? branch_target : (ex_pc + 64'd4);
-            end else if (!hazard_stall && !halt_in_ex) begin
+                pc <= take_branch ? branch_target : (ex2_pc + 64'd4);
+            end else if (!pipeline_stall && !halt_in_ex2) begin
                 pc <= next_pc_predict;
             end
 
-            if (mem_control_flush || ex_control_flush || halt_in_ex) begin
+            // --- STAGE 0: Fetch -> IF/ID ---
+            if (mem_control_flush || ex_control_flush || halt_in_ex2) begin
                 if_id_valid <= 1'b0;
                 if_id_pc <= 64'b0;
                 if_id_instr <= 32'b0;
                 if_id_predicted_taken <= 1'b0;
                 if_id_predicted_target <= 64'b0;
-            end else if (!hazard_stall) begin
+            end else if (!pipeline_stall) begin
                 if_id_valid <= 1'b1;
                 if_id_pc <= pc;
                 if_id_instr <= {memory.bytes[pc+3], memory.bytes[pc+2], memory.bytes[pc+1], memory.bytes[pc]};
@@ -522,51 +538,86 @@ module tinker_core (
                 if_id_predicted_target <= predicted_target;
             end
 
-            if (mem_control_flush || ex_control_flush || hazard_stall || halt_in_ex) begin
-                id_ex_valid <= 1'b0;
-                ex_pc <= 64'b0;
-                ex_opcode <= 5'b0;
-                ex_rd <= 5'b0;
-                ex_rs <= 5'b0;
-                ex_rt <= 5'b0;
-                ex_imm <= 12'b0;
-                ex_use_immediate <= 1'b0;
-                ex_use_fpu_instruction <= 1'b0;
-                ex_is_branch <= 1'b0;
-                ex_predicted_taken <= 1'b0;
-                ex_predicted_target <= 64'b0;
+            // --- STAGE 1: IF/ID -> ID/EX1 ---
+            if (mem_control_flush || ex_control_flush || halt_in_ex2) begin
+                id_ex1_valid <= 1'b0;
+                ex1_pc <= 64'b0;
+                ex1_opcode <= 5'b0;
+                ex1_rd <= 5'b0;
+                ex1_rs <= 5'b0;
+                ex1_rt <= 5'b0;
+                ex1_imm <= 12'b0;
+                ex1_use_immediate <= 1'b0;
+                ex1_use_fpu_instruction <= 1'b0;
+                ex1_is_branch <= 1'b0;
+                ex1_predicted_taken <= 1'b0;
+                ex1_predicted_target <= 64'b0;
                 A <= 64'b0;
                 B <= 64'b0;
                 RD_LATCH <= 64'b0;
-            end else begin
-                id_ex_valid <= if_id_valid;
-                ex_pc <= if_id_pc;
-                ex_opcode <= opcode;
-                ex_rd <= rd;
-                ex_rs <= rs;
-                ex_rt <= rt;
-                ex_imm <= imm;
-                ex_use_immediate <= use_immediate;
-                ex_use_fpu_instruction <= use_fpu_instruction;
-                ex_is_branch <= is_branch;
-                ex_predicted_taken <= if_id_predicted_taken;
-                ex_predicted_target <= if_id_predicted_target;
+            end else if (!pipeline_stall) begin
+                id_ex1_valid <= if_id_valid;
+                ex1_pc <= if_id_pc;
+                ex1_opcode <= opcode;
+                ex1_rd <= rd;
+                ex1_rs <= rs;
+                ex1_rt <= rt;
+                ex1_imm <= imm;
+                ex1_use_immediate <= use_immediate;
+                ex1_use_fpu_instruction <= use_fpu_instruction;
+                ex1_is_branch <= is_branch;
+                ex1_predicted_taken <= if_id_predicted_taken;
+                ex1_predicted_target <= if_id_predicted_target;
                 A <= rs_val;
                 B <= rt_val;
                 RD_LATCH <= rd_val;
             end
 
-            if (mem_control_flush || halt_in_ex) begin
-                ex_mem_valid <= 1'b0;
+            // --- STAGE 2: ID/EX1 -> EX1/EX2 ---
+            if (mem_control_flush || ex_control_flush || pipeline_stall || halt_in_ex2) begin
+                ex1_ex2_valid <= 1'b0;
+                ex2_pc <= 64'b0;
+                ex2_opcode <= 5'b0;
+                ex2_rd <= 5'b0;
+                ex2_A <= 64'b0;
+                ex2_B <= 64'b0;
+                ex2_RD_LATCH <= 64'b0;
+                ex2_imm <= 12'b0;
+                ex2_use_immediate <= 1'b0;
+                ex2_use_fpu_instruction <= 1'b0;
+                ex2_is_branch <= 1'b0;
+                ex2_predicted_taken <= 1'b0;
+                ex2_predicted_target <= 64'b0;
+            end else begin
+                ex1_ex2_valid <= id_ex1_valid;
+                ex2_pc <= ex1_pc;
+                ex2_opcode <= ex1_opcode;
+                ex2_rd <= ex1_rd;
+                ex2_A <= forwarded_A;
+                ex2_B <= forwarded_B;
+                ex2_RD_LATCH <= forwarded_RD;
+                ex2_imm <= ex1_imm;
+                ex2_use_immediate <= ex1_use_immediate;
+                ex2_use_fpu_instruction <= ex1_use_fpu_instruction;
+                ex2_is_branch <= ex1_is_branch;
+                ex2_predicted_taken <= ex1_predicted_taken;
+                ex2_predicted_target <= ex1_predicted_target;
+            end
+
+            // --- STAGE 3: EX1/EX2 -> EX2/MEM ---
+            if (mem_control_flush || halt_in_ex2) begin
+                ex2_mem_valid <= 1'b0;
                 mem_pc <= 64'b0;
                 mem_opcode <= 5'b0;
                 mem_rd <= 5'b0;
                 mem_store_data <= 64'b0;
                 ALUOut <= 64'b0;
                 FPUOut <= 64'b0;
-            end else if (id_ex_valid) begin
-                if (ex_is_branch && ex_opcode != OP_CALL && ex_opcode != OP_RET) begin
-                    ex_mem_valid <= 1'b0;
+            end else begin
+                // A branch in EX2 (that is not CALL/RET handled in MEM/EX2) 
+                // essentially bubbles the next stage until the penalty is over.
+                if (ex1_ex2_valid && ex2_is_branch && ex2_opcode != OP_CALL && ex2_opcode != OP_RET) begin
+                    ex2_mem_valid <= 1'b0;
                     mem_pc <= 64'b0;
                     mem_opcode <= 5'b0;
                     mem_rd <= 5'b0;
@@ -574,54 +625,47 @@ module tinker_core (
                     ALUOut <= 64'b0;
                     FPUOut <= 64'b0;
                 end else begin
-                    ex_mem_valid <= 1'b1;
-                    mem_pc <= ex_pc;
-                    mem_opcode <= ex_opcode;
-                    mem_rd <= ex_rd;
-                    mem_store_data <= forwarded_A;
+                    ex2_mem_valid <= ex1_ex2_valid;
+                    mem_pc <= ex2_pc;
+                    mem_opcode <= ex2_opcode;
+                    mem_rd <= ex2_rd;
+                    mem_store_data <= ex2_A;
                     ALUOut <= alu_res;
                     FPUOut <= fpu_res;
                 end
-            end else begin
-                ex_mem_valid <= 1'b0;
-                mem_pc <= 64'b0;
-                mem_opcode <= 5'b0;
-                mem_rd <= 5'b0;
-                mem_store_data <= 64'b0;
-                ALUOut <= 64'b0;
-                FPUOut <= 64'b0;
             end
 
-            if (ex_mem_valid) begin
-                mem_wb_valid <= writes_register(mem_opcode);
-                wb_opcode <= mem_opcode;
-                wb_rd <= mem_rd;
-                wb_alu_out <= ALUOut;
-                wb_fpu_out <= FPUOut;
-                MDR <= mem_read_data;
-            end else begin
+            // --- STAGE 4: EX2/MEM -> MEM/WB ---
+            if (halt_in_ex2) begin
                 mem_wb_valid <= 1'b0;
                 wb_opcode <= 5'b0;
                 wb_rd <= 5'b0;
                 wb_alu_out <= 64'b0;
                 wb_fpu_out <= 64'b0;
-                MDR <= mem_read_data;
+                MDR <= 64'b0;
+            end else begin
+                mem_wb_valid <= ex2_mem_valid && writes_register(mem_opcode);
+                wb_opcode <= mem_opcode;
+                wb_rd <= mem_rd;
+                wb_alu_out <= ALUOut;
+                wb_fpu_out <= FPUOut;
+                MDR <= forwarded_mem_read_data;
             end
 
             // Predictor Training (Update BHT and BTB)
-            if (id_ex_valid && ex_is_branch && ex_opcode != OP_RET) begin
+            if (ex1_ex2_valid && ex2_is_branch && ex2_opcode != OP_RET) begin
                 // Update BHT counter
                 if (take_branch) begin
-                    if (bht[ex_pc[7:2]] != 2'b11) bht[ex_pc[7:2]] <= bht[ex_pc[7:2]] + 2'b01;
+                    if (bht[ex2_pc[7:2]] != 2'b11) bht[ex2_pc[7:2]] <= bht[ex2_pc[7:2]] + 2'b01;
                 end else begin
-                    if (bht[ex_pc[7:2]] != 2'b00) bht[ex_pc[7:2]] <= bht[ex_pc[7:2]] - 2'b01;
+                    if (bht[ex2_pc[7:2]] != 2'b00) bht[ex2_pc[7:2]] <= bht[ex2_pc[7:2]] - 2'b01;
                 end
                 
                 // Update BTB entry if taken
                 if (take_branch) begin
-                    btb_tgt[ex_pc[7:2]] <= branch_target;
-                    btb_tag[ex_pc[7:2]] <= ex_pc[63:12];
-                    btb_valid[ex_pc[7:2]] <= 1'b1;
+                    btb_tgt[ex2_pc[7:2]] <= branch_target;
+                    btb_tag[ex2_pc[7:2]] <= ex2_pc[63:12];
+                    btb_valid[ex2_pc[7:2]] <= 1'b1;
                 end
             end
 
@@ -630,13 +674,13 @@ module tinker_core (
             if (sb_retire_ready) begin
                 sb_valid[sb_head] <= 1'b0;
                 sb_head <= sb_head + 2'b1;
-                if (!(ex_mem_valid && mem_write && !sb_full)) begin
+                if (!(ex2_mem_valid && mem_write && !sb_full)) begin
                     sb_count <= sb_count - 3'b1;
                 end
             end
 
             // Allocation (Newest)
-            if (ex_mem_valid && mem_write && !sb_full) begin
+            if (ex2_mem_valid && mem_write && !sb_full) begin
                 sb_addr[sb_tail] <= mem_addr;
                 sb_data[sb_tail] <= mem_wdata;
                 sb_valid[sb_tail] <= 1'b1;

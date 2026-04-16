@@ -135,13 +135,13 @@ module tb_tinker;
 
     always @(posedge clk) begin
         if (!reset && !uut.hlt) begin
-            if (uut.if_id_valid && uut.id_ex_valid)
+            if (uut.if_id_valid && uut.id_ex1_valid)
                 saw_overlap <= 1'b1;
 
-            if (uut.if_id_valid && uut.id_ex_valid && uut.ex_mem_valid)
+            if (uut.if_id_valid && uut.id_ex1_valid && uut.ex1_ex2_valid && uut.ex2_mem_valid)
                 saw_three_stage_overlap <= 1'b1;
 
-            if (uut.hazard_stall)
+            if (uut.pipeline_stall)
                 saw_hazard_stall <= 1'b1;
 
             if (uut.ex_control_flush)
