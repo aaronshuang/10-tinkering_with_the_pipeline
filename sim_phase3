@@ -1,0 +1,14 @@
+#!/bin/bash
+# Phase 3 Simulation Script
+IVERILOG=/opt/homebrew/bin/iverilog
+VVP=/opt/homebrew/bin/vvp
+
+echo "Compiling Phase 3 (Dynamic Predictor)..."
+$IVERILOG -g2012 -o /tmp/sim_phase3 hdl/tb_predictor.sv
+
+if [ $? -eq 0 ]; then
+    echo "Running Simulation..."
+    $VVP /tmp/sim_phase3
+else
+    echo "Compilation Failed"
+fi

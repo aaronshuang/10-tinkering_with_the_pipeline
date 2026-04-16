@@ -1,0 +1,20 @@
+#!/bin/bash
+# Full Regression Simulation Script
+IVERILOG=/opt/homebrew/bin/iverilog
+VVP=/opt/homebrew/bin/vvp
+
+echo "=== RUNNING ALL REGRESSIONS ==="
+
+echo -e "\n--- Phase 2: Forwarding & Hazards ---"
+$IVERILOG -g2012 -o /tmp/sim_p2 hdl/tb_phase2.sv && $VVP /tmp/sim_p2
+
+echo -e "\n--- Phase 3: Dynamic Prediction ---"
+$IVERILOG -g2012 -o /tmp/sim_p3 hdl/tb_predictor.sv && $VVP /tmp/sim_p3
+
+echo -e "\n--- Phase 4: Memory Queues ---"
+$IVERILOG -g2012 -o /tmp/sim_p4 hdl/tb_phase4.sv && $VVP /tmp/sim_p4
+
+echo -e "\n--- Comprehensive Pipeline Tests ---"
+$IVERILOG -g2012 -o /tmp/sim_comp hdl/tb_tinker.sv && $VVP /tmp/sim_comp
+
+echo -e "\nDone."

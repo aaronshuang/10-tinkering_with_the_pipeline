@@ -301,43 +301,75 @@ module tinker_core (
         .res(fpu_res)
     );
 
+    // --- Phase 3.5: Dynamic Branch Predictor State ---
+    reg [1:0]  bht       [0:63]; // 2-bit saturating counters
+    reg [63:0] btb_tgt   [0:63]; // Branch Target Buffer
+    reg [51:0] btb_tag   [0:63]; // BTB tags (using bits 63:12)
+    reg [63:0] btb_valid;        // Valid bit for each BTB entry
+
+    // --- Phase 4: Store Buffer State ---
+    reg [63:0] sb_addr  [0:3];
+    reg [63:0] sb_data  [0:3];
+    reg [3:0]  sb_valid;
+    reg [1:0]  sb_head;
+    reg [1:0]  sb_tail;
+    reg [2:0]  sb_count;
+
+    // --- Phase 4: Store-to-Load Forwarding (SLF) Logic ---
     wire [63:0] stack_addr = r31_val - 64'd8;
     wire [63:0] mem_addr = (mem_opcode == OP_CALL || mem_opcode == OP_RET) ? stack_addr : ALUOut;
     wire [63:0] mem_wdata = (mem_opcode == OP_CALL) ? (mem_pc + 64'd4) : mem_store_data;
     wire mem_read = ex_mem_valid && (mem_opcode == OP_MOV_ML || mem_opcode == OP_RET);
     wire mem_write = ex_mem_valid && (mem_opcode == OP_MOV_SM || mem_opcode == OP_CALL);
 
+    // SLF logic to find newest matching SB entry
+    wire slf_hit0 = sb_valid[0] && (sb_addr[0] == mem_addr);
+    wire slf_hit1 = sb_valid[1] && (sb_addr[1] == mem_addr);
+    wire slf_hit2 = sb_valid[2] && (sb_addr[2] == mem_addr);
+    wire slf_hit3 = sb_valid[3] && (sb_addr[3] == mem_addr);
+    
+    wire [1:0] rel_idx0 = 0 - sb_head;
+    wire [1:0] rel_idx1 = 1 - sb_head;
+    wire [1:0] rel_idx2 = 2 - sb_head;
+    wire [1:0] rel_idx3 = 3 - sb_head;
+    
+    wire slf_hit = slf_hit0 | slf_hit1 | slf_hit2 | slf_hit3;
+    wire [63:0] slf_data = 
+        (slf_hit3 && (rel_idx3 >= rel_idx2 || !slf_hit2) && (rel_idx3 >= rel_idx1 || !slf_hit1) && (rel_idx3 >= rel_idx0 || !slf_hit0)) ? sb_data[3] :
+        (slf_hit2 && (rel_idx2 >= rel_idx1 || !slf_hit1) && (rel_idx2 >= rel_idx0 || !slf_hit0)) ? sb_data[2] :
+        (slf_hit1 && (rel_idx1 >= rel_idx0 || !slf_hit0)) ? sb_data[1] :
+        sb_data[0];
+
+    wire [63:0] phys_mem_read_data = memory.read_data;
+    wire [63:0] forwarded_mem_read_data = slf_hit ? slf_data : phys_mem_read_data;
+
+    // --- Physical Memory Interface ---
+    wire sb_retire_ready = (sb_count > 0) && !mem_read;
+    wire [63:0] phys_addr = mem_read ? mem_addr : sb_addr[sb_head];
+
     memory memory (
         .clk(clk),
-        .addr(mem_addr),
-        .write_data(mem_wdata),
-        .mem_write(mem_write),
+        .addr(phys_addr),
+        .write_data(sb_data[sb_head]),
+        .mem_write(sb_retire_ready),
         .mem_read(mem_read),
         .read_data(mem_read_data)
     );
 
     assign reg_write_en = ex_mem_valid && writes_register(mem_opcode);
     assign reg_write_rd = mem_rd;
-    assign reg_write_data = (mem_opcode == OP_MOV_ML) ? mem_read_data :
+    assign reg_write_data = (mem_opcode == OP_MOV_ML) ? forwarded_mem_read_data :
                             (mem_opcode >= OP_ADDF && mem_opcode <= OP_DIVF) ? FPUOut :
                             ALUOut;
 
     reg take_branch;
     reg [63:0] branch_target;
 
-    // Phase 3.5: Dynamic Branch Predictor
-    reg [1:0]  bht       [0:63]; // 2-bit saturating counters
-    reg [63:0] btb_tgt   [0:63]; // Branch Target Buffer
-    reg [51:0] btb_tag   [0:63]; // BTB tags (using bits 63:12)
-    reg [63:0] btb_valid;        // Valid bit for each BTB entry
-
-    // Prediction lookup (Fetch stage)
+    // Predicted next PC
     wire [5:0] pred_idx = pc[7:2];
     wire [51:0] curr_tag = pc[63:12];
     wire btb_hit = btb_valid[pred_idx] && (btb_tag[pred_idx] == curr_tag);
     wire predict_takenRaw = btb_hit && (bht[pred_idx] >= 2'b10);
-    
-    // Predicted next PC
     wire [63:0] predicted_target = btb_tgt[pred_idx];
     wire [63:0] next_pc_predict = predict_takenRaw ? predicted_target : (pc + 64'd4);
 
@@ -388,7 +420,10 @@ module tinker_core (
     wire lu_rt = uses_rt(opcode)        && id_ex_valid && (ex_opcode == OP_MOV_ML) && (rt == ex_rd);
     wire lu_rd = uses_rd_source(opcode) && id_ex_valid && (ex_opcode == OP_MOV_ML) && (rd == ex_rd);
 
-    wire hazard_stall = if_id_valid && (lu_rs || lu_rt || lu_rd);
+    wire sb_full = (sb_count == 3'd4);
+    wire sb_stall = ex_mem_valid && mem_write && sb_full;
+
+    wire hazard_stall = (if_id_valid && (lu_rs || lu_rt || lu_rd)) || sb_stall;
     wire halt_in_ex = id_ex_valid && (ex_opcode == OP_PRIV) && (ex_imm == 12'b0);
 
     // Dynamic resolution in EX
@@ -444,6 +479,16 @@ module tinker_core (
             ALUOut <= 64'b0;
             FPUOut <= 64'b0;
             MDR <= 64'b0;
+
+            // Reset Store Buffer
+            sb_head <= 2'b0;
+            sb_tail <= 2'b0;
+            sb_count <= 3'b0;
+            sb_valid <= 4'b0;
+            for (i=0; i<4; i=i+1) begin
+                sb_addr[i] <= 64'b0;
+                sb_data[i] <= 64'b0;
+            end
         end else if (hlt) begin
             if_id_valid <= 1'b0;
             id_ex_valid <= 1'b0;
@@ -577,6 +622,27 @@ module tinker_core (
                     btb_tgt[ex_pc[7:2]] <= branch_target;
                     btb_tag[ex_pc[7:2]] <= ex_pc[63:12];
                     btb_valid[ex_pc[7:2]] <= 1'b1;
+                end
+            end
+
+            // Store Buffer Allocation and Retirement
+            // Retirement (Oldest first)
+            if (sb_retire_ready) begin
+                sb_valid[sb_head] <= 1'b0;
+                sb_head <= sb_head + 2'b1;
+                if (!(ex_mem_valid && mem_write && !sb_full)) begin
+                    sb_count <= sb_count - 3'b1;
+                end
+            end
+
+            // Allocation (Newest)
+            if (ex_mem_valid && mem_write && !sb_full) begin
+                sb_addr[sb_tail] <= mem_addr;
+                sb_data[sb_tail] <= mem_wdata;
+                sb_valid[sb_tail] <= 1'b1;
+                sb_tail <= sb_tail + 2'b1;
+                if (!sb_retire_ready) begin
+                    sb_count <= sb_count + 3'b1;
                 end
             end
         end

@@ -1,0 +1,14 @@
+#!/bin/bash
+# Phase 4 Simulation Script
+IVERILOG=/opt/homebrew/bin/iverilog
+VVP=/opt/homebrew/bin/vvp
+
+echo "Compiling Phase 4 (Memory Queues)..."
+$IVERILOG -g2012 -o /tmp/sim_phase4 hdl/tb_phase4.sv
+
+if [ $? -eq 0 ]; then
+    echo "Running Simulation..."
+    $VVP /tmp/sim_phase4
+else
+    echo "Compilation Failed"
+fi
