@@ -155,7 +155,13 @@ module tinker_core (
 
     reg [63:0] pc;
     integer i;
+    integer alloc_i;
     reg halt_pending;
+
+    reg [5:0] rat [0:31];
+    reg [5:0] amt [0:31];
+    reg [31:0] temp_free;
+    reg [63:0] phys_busy;
 
     reg if_id_valid;
     reg [63:0] if_id_pc;
@@ -176,6 +182,7 @@ module tinker_core (
     reg ex1_is_branch;
     reg ex1_predicted_taken;
     reg [63:0] ex1_predicted_target;
+    reg [5:0] ex1_phys_rd;
     reg id_ex1_valid1;
     reg [63:0] ex1_pc1;
     reg [4:0] ex1_opcode1;
@@ -185,6 +192,7 @@ module tinker_core (
     reg [11:0] ex1_imm1;
     reg ex1_use_immediate1;
     reg ex1_use_fpu_instruction1;
+    reg [5:0] ex1_phys_rd1;
 
     reg ex1_ex2_valid;
     reg [63:0] ex2_pc;
@@ -201,6 +209,7 @@ module tinker_core (
     reg [63:0] ex2_predicted_target;
     reg ex2_long_op_started;
     reg ex2_long_op_complete;
+    reg [5:0] ex2_phys_rd;
     reg ex1_ex2_valid1;
     reg [63:0] ex2_pc1;
     reg [4:0] ex2_opcode1;
@@ -213,25 +222,30 @@ module tinker_core (
     reg ex2_use_fpu_instruction1;
     reg ex2_long_op_started1;
     reg ex2_long_op_complete1;
+    reg [5:0] ex2_phys_rd1;
 
     reg ex2_mem_valid;
     reg [63:0] mem_pc;
     reg [4:0] mem_opcode;
     reg [4:0] mem_rd;
+    reg [5:0] mem_phys_rd;
     reg [63:0] mem_store_data;
     reg ex2_mem_valid1;
     reg [63:0] mem_pc1;
     reg [4:0] mem_opcode1;
     reg [4:0] mem_rd1;
+    reg [5:0] mem_phys_rd1;
 
     reg mem_wb_valid;
     reg [4:0] wb_opcode;
     reg [4:0] wb_rd;
+    reg [5:0] wb_phys_rd;
     reg [63:0] wb_alu_out;
     reg [63:0] wb_fpu_out;
     reg mem_wb_valid1;
     reg [4:0] wb_opcode1;
     reg [4:0] wb_rd1;
+    reg [5:0] wb_phys_rd1;
     reg [63:0] wb_alu_out1;
     reg [63:0] wb_fpu_out1;
 
@@ -323,6 +337,53 @@ module tinker_core (
         !same_packet_raw(opcode, rd, opcode1, rs1, rt1, rd1) &&
         !(writes_register(opcode) && writes_register(opcode1) && (rd == rd1));
 
+    wire [5:0] rd_phys = rat[rd];
+    wire [5:0] rs_phys = rat[rs];
+    wire [5:0] rt_phys = rat[rt];
+    wire [5:0] rd1_phys = rat[rd1];
+    wire [5:0] rs1_phys = rat[rs1];
+    wire [5:0] rt1_phys = rat[rt1];
+
+    reg alloc0_ok;
+    reg alloc1_ok;
+    reg [5:0] alloc_phys0;
+    reg [5:0] alloc_phys1;
+    reg [31:0] temp_free_scan;
+
+    always @(*) begin
+        alloc0_ok = !if_id_valid || !writes_register(opcode);
+        alloc1_ok = !if_id_valid1 || !decode_pairable_packet || !writes_register(opcode1);
+        alloc_phys0 = 6'b0;
+        alloc_phys1 = 6'b0;
+        temp_free_scan = temp_free;
+
+        if (if_id_valid && writes_register(opcode)) begin
+            alloc0_ok = 1'b0;
+            for (alloc_i = 0; alloc_i < 32; alloc_i = alloc_i + 1) begin
+                if (!alloc0_ok && temp_free_scan[alloc_i]) begin
+                    alloc0_ok = 1'b1;
+                    alloc_phys0 = alloc_i + 6'd32;
+                    temp_free_scan[alloc_i] = 1'b0;
+                end
+            end
+        end
+
+        if (if_id_valid1 && decode_pairable_packet && writes_register(opcode1)) begin
+            alloc1_ok = 1'b0;
+            for (alloc_i = 0; alloc_i < 32; alloc_i = alloc_i + 1) begin
+                if (!alloc1_ok && temp_free_scan[alloc_i]) begin
+                    alloc1_ok = 1'b1;
+                    alloc_phys1 = alloc_i + 6'd32;
+                    temp_free_scan[alloc_i] = 1'b0;
+                end
+            end
+        end
+    end
+
+    wire rename_stall =
+        (if_id_valid && writes_register(opcode) && !alloc0_ok) ||
+        (if_id_valid1 && decode_pairable_packet && writes_register(opcode1) && !alloc1_ok);
+
     wire [63:0] rd_val, rs_val, rt_val;
     wire [63:0] rd1_val, rs1_val, rt1_val;
     wire [63:0] r31_val;
@@ -331,24 +392,34 @@ module tinker_core (
     wire [63:0] reg_write_data1;
     wire reg_write_en;
     wire reg_write_en1;
-    wire [4:0] reg_write_rd;
-    wire [4:0] reg_write_rd1;
+    wire [5:0] reg_write_rd;
+    wire [5:0] reg_write_rd1;
+    wire [63:0] commit_data0;
+    wire [63:0] commit_data1;
+    wire commit_en0;
+    wire commit_en1;
 
     register_file reg_file (
         .clk(clk),
         .reset(reset),
-        .data0(reg_write_data),
-        .data1(reg_write_data1),
-        .rd0(rd),
-        .rs0(rs),
-        .rt0(rt),
-        .rd1(rd1),
-        .rs1(rs1),
-        .rt1(rt1),
-        .write_rd0(reg_write_rd),
-        .write_rd1(reg_write_rd1),
-        .write_enable0(reg_write_en),
-        .write_enable1(reg_write_en1),
+        .phys_data0(reg_write_data),
+        .phys_data1(reg_write_data1),
+        .rd0(rd_phys),
+        .rs0(rs_phys),
+        .rt0(rt_phys),
+        .rd1(rd1_phys),
+        .rs1(rs1_phys),
+        .rt1(rt1_phys),
+        .phys_write_rd0(reg_write_rd),
+        .phys_write_rd1(reg_write_rd1),
+        .phys_write_enable0(reg_write_en),
+        .phys_write_enable1(reg_write_en1),
+        .commit_data0(commit_data0),
+        .commit_data1(commit_data1),
+        .commit_arch_rd0(mem_rd),
+        .commit_arch_rd1(mem_rd1),
+        .commit_enable0(commit_en0),
+        .commit_enable1(commit_en1),
         .rd0_val(rd_val),
         .rs0_val(rs_val),
         .rt0_val(rt_val),
@@ -465,6 +536,10 @@ module tinker_core (
                             (mem_opcode >= OP_ADDF && mem_opcode <= OP_DIVF) ? FPUOut :
                             ALUOut;
     assign reg_write_data1 = (mem_opcode1 >= OP_ADDF && mem_opcode1 <= OP_DIVF) ? FPUOut1 : ALUOut1;
+    assign commit_data0 = reg_write_data;
+    assign commit_data1 = reg_write_data1;
+    assign commit_en0 = reg_write_en;
+    assign commit_en1 = reg_write_en1;
 
     reg take_branch;
     reg [63:0] branch_target;
@@ -515,9 +590,9 @@ module tinker_core (
     );
 
     assign reg_write_en = ex2_mem_valid && writes_register(mem_opcode);
-    assign reg_write_rd = mem_rd;
+    assign reg_write_rd = mem_phys_rd;
     assign reg_write_en1 = ex2_mem_valid1 && writes_register(mem_opcode1);
-    assign reg_write_rd1 = mem_rd1;
+    assign reg_write_rd1 = mem_phys_rd1;
 
     always @(*) begin
         take_branch = 1'b0;
@@ -560,60 +635,19 @@ module tinker_core (
     wire sb_full = (sb_count == 3'd4);
     wire sb_stall = ex2_mem_valid && mem_write && sb_full;
 
-    wire src_hazard0_id_0 = if_id_valid && id_ex1_valid && writes_register(ex1_opcode) &&
-                            ((uses_rs(opcode) && (rs == ex1_rd)) ||
-                             (uses_rt(opcode) && (rt == ex1_rd)) ||
-                             (uses_rd_source(opcode) && (rd == ex1_rd)));
-    wire src_hazard0_id_1 = if_id_valid && id_ex1_valid1 && writes_register(ex1_opcode1) &&
-                            ((uses_rs(opcode) && (rs == ex1_rd1)) ||
-                             (uses_rt(opcode) && (rt == ex1_rd1)) ||
-                             (uses_rd_source(opcode) && (rd == ex1_rd1)));
-    wire src_hazard0_ex2_0 = if_id_valid && ex1_ex2_valid && writes_register(ex2_opcode) &&
-                             ((uses_rs(opcode) && (rs == ex2_rd)) ||
-                              (uses_rt(opcode) && (rt == ex2_rd)) ||
-                              (uses_rd_source(opcode) && (rd == ex2_rd)));
-    wire src_hazard0_ex2_1 = if_id_valid && ex1_ex2_valid1 && writes_register(ex2_opcode1) &&
-                             ((uses_rs(opcode) && (rs == ex2_rd1)) ||
-                              (uses_rt(opcode) && (rt == ex2_rd1)) ||
-                              (uses_rd_source(opcode) && (rd == ex2_rd1)));
-    wire src_hazard0_mem_0 = if_id_valid && ex2_mem_valid && writes_register(mem_opcode) &&
-                             ((uses_rs(opcode) && (rs == mem_rd)) ||
-                              (uses_rt(opcode) && (rt == mem_rd)) ||
-                              (uses_rd_source(opcode) && (rd == mem_rd)));
-    wire src_hazard0_mem_1 = if_id_valid && ex2_mem_valid1 && writes_register(mem_opcode1) &&
-                             ((uses_rs(opcode) && (rs == mem_rd1)) ||
-                              (uses_rt(opcode) && (rt == mem_rd1)) ||
-                              (uses_rd_source(opcode) && (rd == mem_rd1)));
+    wire src_hazard0 =
+        if_id_valid &&
+        ((uses_rs(opcode) && phys_busy[rs_phys]) ||
+         (uses_rt(opcode) && phys_busy[rt_phys]) ||
+         (uses_rd_source(opcode) && phys_busy[rd_phys]));
 
-    wire src_hazard1_id_0 = if_id_valid1 && id_ex1_valid && writes_register(ex1_opcode) &&
-                            ((uses_rs(opcode1) && (rs1 == ex1_rd)) ||
-                             (uses_rt(opcode1) && (rt1 == ex1_rd)) ||
-                             (uses_rd_source(opcode1) && (rd1 == ex1_rd)));
-    wire src_hazard1_id_1 = if_id_valid1 && id_ex1_valid1 && writes_register(ex1_opcode1) &&
-                            ((uses_rs(opcode1) && (rs1 == ex1_rd1)) ||
-                             (uses_rt(opcode1) && (rt1 == ex1_rd1)) ||
-                             (uses_rd_source(opcode1) && (rd1 == ex1_rd1)));
-    wire src_hazard1_ex2_0 = if_id_valid1 && ex1_ex2_valid && writes_register(ex2_opcode) &&
-                             ((uses_rs(opcode1) && (rs1 == ex2_rd)) ||
-                              (uses_rt(opcode1) && (rt1 == ex2_rd)) ||
-                              (uses_rd_source(opcode1) && (rd1 == ex2_rd)));
-    wire src_hazard1_ex2_1 = if_id_valid1 && ex1_ex2_valid1 && writes_register(ex2_opcode1) &&
-                             ((uses_rs(opcode1) && (rs1 == ex2_rd1)) ||
-                              (uses_rt(opcode1) && (rt1 == ex2_rd1)) ||
-                              (uses_rd_source(opcode1) && (rd1 == ex2_rd1)));
-    wire src_hazard1_mem_0 = if_id_valid1 && ex2_mem_valid && writes_register(mem_opcode) &&
-                             ((uses_rs(opcode1) && (rs1 == mem_rd)) ||
-                              (uses_rt(opcode1) && (rt1 == mem_rd)) ||
-                              (uses_rd_source(opcode1) && (rd1 == mem_rd)));
-    wire src_hazard1_mem_1 = if_id_valid1 && ex2_mem_valid1 && writes_register(mem_opcode1) &&
-                             ((uses_rs(opcode1) && (rs1 == mem_rd1)) ||
-                              (uses_rt(opcode1) && (rt1 == mem_rd1)) ||
-                              (uses_rd_source(opcode1) && (rd1 == mem_rd1)));
+    wire src_hazard1 =
+        if_id_valid1 &&
+        ((uses_rs(opcode1) && phys_busy[rs1_phys]) ||
+         (uses_rt(opcode1) && phys_busy[rt1_phys]) ||
+         (uses_rd_source(opcode1) && phys_busy[rd1_phys]));
 
-    wire decode_hazard = src_hazard0_id_0 || src_hazard0_id_1 ||
-                         src_hazard0_ex2_0 || src_hazard0_ex2_1 || src_hazard0_mem_0 || src_hazard0_mem_1 ||
-                         src_hazard1_id_0 || src_hazard1_id_1 ||
-                         src_hazard1_ex2_0 || src_hazard1_ex2_1 || src_hazard1_mem_0 || src_hazard1_mem_1;
+    wire decode_hazard = src_hazard0 || src_hazard1;
 
     wire ex2_waiting_for_alu = ex2_needs_alu_pipe && (!ex2_long_op_started || !ex2_long_op_complete);
     wire ex2_waiting_for_fpu = ex2_needs_fpu_pipe && (!ex2_long_op_started || !ex2_long_op_complete);
@@ -621,7 +655,7 @@ module tinker_core (
     wire ex2_waiting_for_fpu1 = ex2_needs_fpu_pipe1 && (!ex2_long_op_started1 || !ex2_long_op_complete1);
     wire alu_busy_stall = ex2_waiting_for_alu || ex2_waiting_for_fpu || ex2_waiting_for_alu1 || ex2_waiting_for_fpu1;
 
-    wire pipeline_stall = decode_hazard || sb_stall || alu_busy_stall;
+    wire pipeline_stall = decode_hazard || rename_stall || sb_stall || alu_busy_stall;
     wire halt_in_ex2 = ex1_ex2_valid && (ex2_opcode == OP_PRIV) && (ex2_imm == 12'b0);
 
     wire ex_mispredicted = (take_branch != ex2_predicted_taken) || (take_branch && (branch_target != ex2_predicted_target));
@@ -655,6 +689,7 @@ module tinker_core (
             ex1_is_branch <= 1'b0;
             ex1_predicted_taken <= 1'b0;
             ex1_predicted_target <= 64'b0;
+            ex1_phys_rd <= 6'b0;
             id_ex1_valid1 <= 1'b0;
             ex1_pc1 <= 64'b0;
             ex1_opcode1 <= 5'b0;
@@ -664,6 +699,7 @@ module tinker_core (
             ex1_imm1 <= 12'b0;
             ex1_use_immediate1 <= 1'b0;
             ex1_use_fpu_instruction1 <= 1'b0;
+            ex1_phys_rd1 <= 6'b0;
 
             ex1_ex2_valid <= 1'b0;
             ex2_pc <= 64'b0;
@@ -680,6 +716,7 @@ module tinker_core (
             ex2_predicted_target <= 64'b0;
             ex2_long_op_started <= 1'b0;
             ex2_long_op_complete <= 1'b0;
+            ex2_phys_rd <= 6'b0;
             ex1_ex2_valid1 <= 1'b0;
             ex2_pc1 <= 64'b0;
             ex2_opcode1 <= 5'b0;
@@ -692,25 +729,30 @@ module tinker_core (
             ex2_use_fpu_instruction1 <= 1'b0;
             ex2_long_op_started1 <= 1'b0;
             ex2_long_op_complete1 <= 1'b0;
+            ex2_phys_rd1 <= 6'b0;
 
             ex2_mem_valid <= 1'b0;
             mem_pc <= 64'b0;
             mem_opcode <= 5'b0;
             mem_rd <= 5'b0;
+            mem_phys_rd <= 6'b0;
             mem_store_data <= 64'b0;
             ex2_mem_valid1 <= 1'b0;
             mem_pc1 <= 64'b0;
             mem_opcode1 <= 5'b0;
             mem_rd1 <= 5'b0;
+            mem_phys_rd1 <= 6'b0;
 
             mem_wb_valid <= 1'b0;
             wb_opcode <= 5'b0;
             wb_rd <= 5'b0;
+            wb_phys_rd <= 6'b0;
             wb_alu_out <= 64'b0;
             wb_fpu_out <= 64'b0;
             mem_wb_valid1 <= 1'b0;
             wb_opcode1 <= 5'b0;
             wb_rd1 <= 5'b0;
+            wb_phys_rd1 <= 6'b0;
             wb_alu_out1 <= 64'b0;
             wb_fpu_out1 <= 64'b0;
 
@@ -809,6 +851,7 @@ module tinker_core (
                 ex1_is_branch <= 1'b0;
                 ex1_predicted_taken <= 1'b0;
                 ex1_predicted_target <= 64'b0;
+                ex1_phys_rd <= 6'b0;
                 A <= 64'b0;
                 B <= 64'b0;
                 RD_LATCH <= 64'b0;
@@ -822,10 +865,11 @@ module tinker_core (
                 ex1_imm1 <= 12'b0;
                 ex1_use_immediate1 <= 1'b0;
                 ex1_use_fpu_instruction1 <= 1'b0;
+                ex1_phys_rd1 <= 6'b0;
                 A1 <= 64'b0;
                 B1 <= 64'b0;
                 RD_LATCH1 <= 64'b0;
-            end else if (decode_hazard && !alu_busy_stall && !sb_stall) begin
+            end else if ((decode_hazard || rename_stall) && !alu_busy_stall && !sb_stall) begin
                 id_ex1_valid <= 1'b0;
                 ex1_pc <= 64'b0;
                 ex1_opcode <= 5'b0;
@@ -838,6 +882,7 @@ module tinker_core (
                 ex1_is_branch <= 1'b0;
                 ex1_predicted_taken <= 1'b0;
                 ex1_predicted_target <= 64'b0;
+                ex1_phys_rd <= 6'b0;
                 A <= 64'b0;
                 B <= 64'b0;
                 RD_LATCH <= 64'b0;
@@ -851,6 +896,7 @@ module tinker_core (
                 ex1_imm1 <= 12'b0;
                 ex1_use_immediate1 <= 1'b0;
                 ex1_use_fpu_instruction1 <= 1'b0;
+                ex1_phys_rd1 <= 6'b0;
                 A1 <= 64'b0;
                 B1 <= 64'b0;
                 RD_LATCH1 <= 64'b0;
@@ -867,6 +913,7 @@ module tinker_core (
                 ex1_is_branch <= is_branch;
                 ex1_predicted_taken <= if_id_predicted_taken;
                 ex1_predicted_target <= if_id_predicted_target;
+                ex1_phys_rd <= writes_register(opcode) ? alloc_phys0 : 6'b0;
                 A <= rs_val;
                 B <= rt_val;
                 RD_LATCH <= rd_val;
@@ -880,6 +927,7 @@ module tinker_core (
                 ex1_imm1 <= imm1;
                 ex1_use_immediate1 <= use_immediate1;
                 ex1_use_fpu_instruction1 <= use_fpu_instruction1;
+                ex1_phys_rd1 <= writes_register(opcode1) ? alloc_phys1 : 6'b0;
                 A1 <= rs1_val;
                 B1 <= rt1_val;
                 RD_LATCH1 <= rd1_val;
@@ -901,6 +949,7 @@ module tinker_core (
                 ex2_predicted_target <= 64'b0;
                 ex2_long_op_started <= 1'b0;
                 ex2_long_op_complete <= 1'b0;
+                ex2_phys_rd <= 6'b0;
 
                 ex1_ex2_valid1 <= 1'b0;
                 ex2_pc1 <= 64'b0;
@@ -914,6 +963,7 @@ module tinker_core (
                 ex2_use_fpu_instruction1 <= 1'b0;
                 ex2_long_op_started1 <= 1'b0;
                 ex2_long_op_complete1 <= 1'b0;
+                ex2_phys_rd1 <= 6'b0;
             end else if (alu_busy_stall) begin
             end else begin
                 ex1_ex2_valid <= id_ex1_valid;
@@ -931,6 +981,7 @@ module tinker_core (
                 ex2_predicted_target <= ex1_predicted_target;
                 ex2_long_op_started <= 1'b0;
                 ex2_long_op_complete <= 1'b0;
+                ex2_phys_rd <= ex1_phys_rd;
 
                 ex1_ex2_valid1 <= id_ex1_valid1;
                 ex2_pc1 <= ex1_pc1;
@@ -944,6 +995,7 @@ module tinker_core (
                 ex2_use_fpu_instruction1 <= ex1_use_fpu_instruction1;
                 ex2_long_op_started1 <= 1'b0;
                 ex2_long_op_complete1 <= 1'b0;
+                ex2_phys_rd1 <= ex1_phys_rd1;
             end
 
             if (ex1_ex2_valid && (alu_start || fpu_start)) begin
@@ -964,6 +1016,7 @@ module tinker_core (
                 mem_pc <= 64'b0;
                 mem_opcode <= 5'b0;
                 mem_rd <= 5'b0;
+                mem_phys_rd <= 6'b0;
                 mem_store_data <= 64'b0;
                 ALUOut <= 64'b0;
                 FPUOut <= 64'b0;
@@ -971,6 +1024,7 @@ module tinker_core (
                 mem_pc1 <= 64'b0;
                 mem_opcode1 <= 5'b0;
                 mem_rd1 <= 5'b0;
+                mem_phys_rd1 <= 6'b0;
                 ALUOut1 <= 64'b0;
                 FPUOut1 <= 64'b0;
             end else begin
@@ -979,6 +1033,7 @@ module tinker_core (
                     mem_pc <= 64'b0;
                     mem_opcode <= 5'b0;
                     mem_rd <= 5'b0;
+                    mem_phys_rd <= 6'b0;
                     mem_store_data <= 64'b0;
                     ALUOut <= 64'b0;
                     FPUOut <= 64'b0;
@@ -986,6 +1041,7 @@ module tinker_core (
                     mem_pc1 <= 64'b0;
                     mem_opcode1 <= 5'b0;
                     mem_rd1 <= 5'b0;
+                    mem_phys_rd1 <= 6'b0;
                     ALUOut1 <= 64'b0;
                     FPUOut1 <= 64'b0;
                 end else if (sb_stall || alu_busy_stall) begin
@@ -994,6 +1050,7 @@ module tinker_core (
                     mem_pc <= ex2_pc;
                     mem_opcode <= ex2_opcode;
                     mem_rd <= ex2_rd;
+                    mem_phys_rd <= ex2_phys_rd;
                     mem_store_data <= ex2_A;
                     ALUOut <= alu_res;
                     FPUOut <= fpu_res;
@@ -1002,6 +1059,7 @@ module tinker_core (
                     mem_pc1 <= ex2_pc1;
                     mem_opcode1 <= ex2_opcode1;
                     mem_rd1 <= ex2_rd1;
+                    mem_phys_rd1 <= ex2_phys_rd1;
                     ALUOut1 <= alu_res1;
                     FPUOut1 <= fpu_res1;
                 end
@@ -1011,11 +1069,13 @@ module tinker_core (
                 mem_wb_valid <= 1'b0;
                 wb_opcode <= 5'b0;
                 wb_rd <= 5'b0;
+                wb_phys_rd <= 6'b0;
                 wb_alu_out <= 64'b0;
                 wb_fpu_out <= 64'b0;
                 mem_wb_valid1 <= 1'b0;
                 wb_opcode1 <= 5'b0;
                 wb_rd1 <= 5'b0;
+                wb_phys_rd1 <= 6'b0;
                 wb_alu_out1 <= 64'b0;
                 wb_fpu_out1 <= 64'b0;
                 MDR <= 64'b0;
@@ -1023,11 +1083,13 @@ module tinker_core (
                 mem_wb_valid <= ex2_mem_valid && writes_register(mem_opcode);
                 wb_opcode <= mem_opcode;
                 wb_rd <= mem_rd;
+                wb_phys_rd <= mem_phys_rd;
                 wb_alu_out <= ALUOut;
                 wb_fpu_out <= FPUOut;
                 mem_wb_valid1 <= ex2_mem_valid1 && writes_register(mem_opcode1);
                 wb_opcode1 <= mem_opcode1;
                 wb_rd1 <= mem_rd1;
+                wb_phys_rd1 <= mem_phys_rd1;
                 wb_alu_out1 <= ALUOut1;
                 wb_fpu_out1 <= FPUOut1;
                 MDR <= forwarded_mem_read_data;
@@ -1061,6 +1123,74 @@ module tinker_core (
                 sb_tail <= sb_tail + 2'b1;
                 if (!sb_retire_ready) begin
                     sb_count <= sb_count + 3'b1;
+                end
+            end
+        end
+    end
+
+    always @(posedge clk) begin
+        reg [5:0] old_amt0;
+        reg [5:0] old_amt1;
+        if (reset) begin
+            temp_free <= 32'hFFFF_FFFF;
+            phys_busy <= 64'b0;
+            for (i = 0; i < 32; i = i + 1) begin
+                rat[i] <= i[5:0];
+                amt[i] <= i[5:0];
+            end
+        end else begin
+            if (commit_en0) begin
+                old_amt0 = amt[mem_rd];
+                amt[mem_rd] <= mem_phys_rd;
+                if (rat[mem_rd] == old_amt0)
+                    rat[mem_rd] <= mem_phys_rd;
+                if (old_amt0 >= 6'd32)
+                    temp_free[old_amt0 - 6'd32] <= 1'b1;
+            end
+
+            if (commit_en1) begin
+                old_amt1 = amt[mem_rd1];
+                amt[mem_rd1] <= mem_phys_rd1;
+                if (rat[mem_rd1] == old_amt1)
+                    rat[mem_rd1] <= mem_phys_rd1;
+                if (old_amt1 >= 6'd32)
+                    temp_free[old_amt1 - 6'd32] <= 1'b1;
+            end
+
+            if (mem_wb_valid)
+                phys_busy[wb_phys_rd] <= 1'b0;
+            if (mem_wb_valid1)
+                phys_busy[wb_phys_rd1] <= 1'b0;
+
+            if (mem_control_flush || ex_control_flush || halt_in_ex2 || halt_pending) begin
+                temp_free <= 32'hFFFF_FFFF;
+                phys_busy <= 64'b0;
+
+                for (i = 0; i < 32; i = i + 1) begin
+                    rat[i] <= amt[i];
+                    if (amt[i] >= 6'd32)
+                        temp_free[amt[i] - 6'd32] <= 1'b0;
+                end
+
+                if (ex2_mem_valid && writes_register(mem_opcode) && (mem_phys_rd >= 6'd32))
+                    temp_free[mem_phys_rd - 6'd32] <= 1'b0;
+                if (ex2_mem_valid1 && writes_register(mem_opcode1) && (mem_phys_rd1 >= 6'd32))
+                    temp_free[mem_phys_rd1 - 6'd32] <= 1'b0;
+                if (mem_wb_valid && (wb_phys_rd >= 6'd32))
+                    temp_free[wb_phys_rd - 6'd32] <= 1'b0;
+                if (mem_wb_valid1 && (wb_phys_rd1 >= 6'd32))
+                    temp_free[wb_phys_rd1 - 6'd32] <= 1'b0;
+            end else if (!pipeline_stall) begin
+                if (if_id_valid && writes_register(opcode)) begin
+                    rat[rd] <= alloc_phys0;
+                    temp_free[alloc_phys0 - 6'd32] <= 1'b0;
+                    phys_busy[alloc_phys0] <= 1'b1;
+                end
+
+                if (if_id_valid1 && decode_pairable_packet && writes_register(opcode1)) begin
+                    rat[rd1] <= alloc_phys1;
+                    temp_free[alloc_phys1 - 6'd32] <= 1'b0;
+                    phys_busy[alloc_phys1] <= 1'b1;
                 end
             end
         end

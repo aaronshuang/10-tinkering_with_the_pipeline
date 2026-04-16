@@ -1,37 +1,75 @@
 module register_file (
     input clk,
     input reset,
-    input [63:0] data0,
-    input [63:0] data1,
-    input [4:0] rd0,
-    input [4:0] rs0,
-    input [4:0] rt0,
-    input [4:0] rd1,
-    input [4:0] rs1,
-    input [4:0] rt1,
-    input [4:0] write_rd0,
-    input [4:0] write_rd1,
-    input write_enable0,
-    input write_enable1,
-    output [63:0] rd0_val, rs0_val, rt0_val,
-    output [63:0] rd1_val, rs1_val, rt1_val,
+    input [63:0] phys_data0,
+    input [63:0] phys_data1,
+    input [5:0] rd0,
+    input [5:0] rs0,
+    input [5:0] rt0,
+    input [5:0] rd1,
+    input [5:0] rs1,
+    input [5:0] rt1,
+    input [5:0] phys_write_rd0,
+    input [5:0] phys_write_rd1,
+    input phys_write_enable0,
+    input phys_write_enable1,
+    input [63:0] commit_data0,
+    input [63:0] commit_data1,
+    input [4:0] commit_arch_rd0,
+    input [4:0] commit_arch_rd1,
+    input commit_enable0,
+    input commit_enable1,
+    output reg [63:0] rd0_val, rs0_val, rt0_val,
+    output reg [63:0] rd1_val, rs1_val, rt1_val,
     output [63:0] r31_val
 );
     reg [63:0] registers [0:31];
+    reg [63:0] temp_registers [0:31];
 
-    wire [63:0] rd0_bypass0 = (write_enable0 && (write_rd0 == rd0)) ? data0 : registers[rd0];
-    wire [63:0] rs0_bypass0 = (write_enable0 && (write_rd0 == rs0)) ? data0 : registers[rs0];
-    wire [63:0] rt0_bypass0 = (write_enable0 && (write_rd0 == rt0)) ? data0 : registers[rt0];
-    wire [63:0] rd1_bypass0 = (write_enable0 && (write_rd0 == rd1)) ? data0 : registers[rd1];
-    wire [63:0] rs1_bypass0 = (write_enable0 && (write_rd0 == rs1)) ? data0 : registers[rs1];
-    wire [63:0] rt1_bypass0 = (write_enable0 && (write_rd0 == rt1)) ? data0 : registers[rt1];
+    always @(*) begin
+        rd0_val = (rd0 < 6'd32) ? registers[rd0[4:0]] : temp_registers[rd0[4:0]];
+        rs0_val = (rs0 < 6'd32) ? registers[rs0[4:0]] : temp_registers[rs0[4:0]];
+        rt0_val = (rt0 < 6'd32) ? registers[rt0[4:0]] : temp_registers[rt0[4:0]];
+        rd1_val = (rd1 < 6'd32) ? registers[rd1[4:0]] : temp_registers[rd1[4:0]];
+        rs1_val = (rs1 < 6'd32) ? registers[rs1[4:0]] : temp_registers[rs1[4:0]];
+        rt1_val = (rt1 < 6'd32) ? registers[rt1[4:0]] : temp_registers[rt1[4:0]];
 
-    assign rd0_val = (write_enable1 && (write_rd1 == rd0)) ? data1 : rd0_bypass0;
-    assign rs0_val = (write_enable1 && (write_rd1 == rs0)) ? data1 : rs0_bypass0;
-    assign rt0_val = (write_enable1 && (write_rd1 == rt0)) ? data1 : rt0_bypass0;
-    assign rd1_val = (write_enable1 && (write_rd1 == rd1)) ? data1 : rd1_bypass0;
-    assign rs1_val = (write_enable1 && (write_rd1 == rs1)) ? data1 : rs1_bypass0;
-    assign rt1_val = (write_enable1 && (write_rd1 == rt1)) ? data1 : rt1_bypass0;
+        if (phys_write_enable0) begin
+            if (phys_write_rd0 == rd0) rd0_val = phys_data0;
+            if (phys_write_rd0 == rs0) rs0_val = phys_data0;
+            if (phys_write_rd0 == rt0) rt0_val = phys_data0;
+            if (phys_write_rd0 == rd1) rd1_val = phys_data0;
+            if (phys_write_rd0 == rs1) rs1_val = phys_data0;
+            if (phys_write_rd0 == rt1) rt1_val = phys_data0;
+        end
+
+        if (phys_write_enable1) begin
+            if (phys_write_rd1 == rd0) rd0_val = phys_data1;
+            if (phys_write_rd1 == rs0) rs0_val = phys_data1;
+            if (phys_write_rd1 == rt0) rt0_val = phys_data1;
+            if (phys_write_rd1 == rd1) rd1_val = phys_data1;
+            if (phys_write_rd1 == rs1) rs1_val = phys_data1;
+            if (phys_write_rd1 == rt1) rt1_val = phys_data1;
+        end
+
+        if (commit_enable0) begin
+            if ((rd0 < 6'd32) && (commit_arch_rd0 == rd0[4:0])) rd0_val = commit_data0;
+            if ((rs0 < 6'd32) && (commit_arch_rd0 == rs0[4:0])) rs0_val = commit_data0;
+            if ((rt0 < 6'd32) && (commit_arch_rd0 == rt0[4:0])) rt0_val = commit_data0;
+            if ((rd1 < 6'd32) && (commit_arch_rd0 == rd1[4:0])) rd1_val = commit_data0;
+            if ((rs1 < 6'd32) && (commit_arch_rd0 == rs1[4:0])) rs1_val = commit_data0;
+            if ((rt1 < 6'd32) && (commit_arch_rd0 == rt1[4:0])) rt1_val = commit_data0;
+        end
+
+        if (commit_enable1) begin
+            if ((rd0 < 6'd32) && (commit_arch_rd1 == rd0[4:0])) rd0_val = commit_data1;
+            if ((rs0 < 6'd32) && (commit_arch_rd1 == rs0[4:0])) rs0_val = commit_data1;
+            if ((rt0 < 6'd32) && (commit_arch_rd1 == rt0[4:0])) rt0_val = commit_data1;
+            if ((rd1 < 6'd32) && (commit_arch_rd1 == rd1[4:0])) rd1_val = commit_data1;
+            if ((rs1 < 6'd32) && (commit_arch_rd1 == rs1[4:0])) rs1_val = commit_data1;
+            if ((rt1 < 6'd32) && (commit_arch_rd1 == rt1[4:0])) rt1_val = commit_data1;
+        end
+    end
     assign r31_val = registers[31];
 
     integer i;
@@ -42,13 +80,30 @@ module register_file (
                 registers[i] <= 64'b0;
             end
             registers[31] <= 64'd524288;
+
+            for (i = 0; i < 32; i = i + 1) begin
+                temp_registers[i] <= 64'b0;
+            end
         end else begin
-            if (write_enable0) begin
-                registers[write_rd0] <= data0;
+            if (phys_write_enable0) begin
+                if (phys_write_rd0 < 6'd32)
+                    registers[phys_write_rd0[4:0]] <= phys_data0;
+                else
+                    temp_registers[phys_write_rd0[4:0]] <= phys_data0;
             end
-            if (write_enable1) begin
-                registers[write_rd1] <= data1;
+
+            if (phys_write_enable1) begin
+                if (phys_write_rd1 < 6'd32)
+                    registers[phys_write_rd1[4:0]] <= phys_data1;
+                else
+                    temp_registers[phys_write_rd1[4:0]] <= phys_data1;
             end
+
+            if (commit_enable0)
+                registers[commit_arch_rd0] <= commit_data0;
+
+            if (commit_enable1)
+                registers[commit_arch_rd1] <= commit_data1;
         end
     end
 endmodule
