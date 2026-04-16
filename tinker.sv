@@ -192,6 +192,7 @@ module tinker_core (
     wire [63:0] r31_val;
     wire [63:0] reg_write_data;
     wire reg_write_en;
+    wire [4:0] reg_write_rd;
 
     register_file reg_file (
         .clk(clk),
@@ -200,7 +201,7 @@ module tinker_core (
         .rd(rd),
         .rs(rs),
         .rt(rt),
-        .write_rd(wb_rd),
+        .write_rd(reg_write_rd),
         .write_enable(reg_write_en),
         .rd_val(rd_val),
         .rs_val(rs_val),
@@ -243,10 +244,11 @@ module tinker_core (
         .read_data(mem_read_data)
     );
 
-    assign reg_write_en = mem_wb_valid && writes_register(wb_opcode);
-    assign reg_write_data = (wb_opcode == OP_MOV_ML) ? MDR :
-                            (wb_opcode >= OP_ADDF && wb_opcode <= OP_DIVF) ? wb_fpu_out :
-                            wb_alu_out;
+    assign reg_write_en = ex_mem_valid && writes_register(mem_opcode);
+    assign reg_write_rd = mem_rd;
+    assign reg_write_data = (mem_opcode == OP_MOV_ML) ? mem_read_data :
+                            (mem_opcode >= OP_ADDF && mem_opcode <= OP_DIVF) ? FPUOut :
+                            ALUOut;
 
     reg take_branch;
     reg [63:0] branch_target;
@@ -445,8 +447,8 @@ module tinker_core (
                 FPUOut <= 64'b0;
             end
 
-            if (ex_mem_valid && writes_register(mem_opcode)) begin
-                mem_wb_valid <= 1'b1;
+            if (ex_mem_valid) begin
+                mem_wb_valid <= writes_register(mem_opcode);
                 wb_opcode <= mem_opcode;
                 wb_rd <= mem_rd;
                 wb_alu_out <= ALUOut;
