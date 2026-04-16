@@ -52,7 +52,7 @@ module tb_phase4;
     endtask
 
     initial begin
-        $dumpfile("tinker_phase4.vcd");
+        // $dumpfile("tinker_phase4.vcd");
         $dumpvars(0, tb_phase4);
 
         clk   = 0;

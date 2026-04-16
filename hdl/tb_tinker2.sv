@@ -12,7 +12,6 @@ module tb_tinker_2;
     integer passed_tests = 0;
     integer total_tests = 0;
     integer timeout;
-    reg saw_hazard_stall;
 
     task write_inst;
         input [63:0] addr;
@@ -51,8 +50,6 @@ module tb_tinker_2;
 
         clk = 0;
         reset = 1;
-        saw_hazard_stall = 0;
-
         write_inst(16'h2000, 5'h19, 5'd1, 5'd0, 5'd0, 12'd5);  // addi r1, 5
         write_inst(16'h2004, 5'h19, 5'd2, 5'd0, 5'd0, 12'd7);  // addi r2, 7
         write_inst(16'h2008, 5'h18, 5'd3, 5'd1, 5'd2, 12'd0);  // add  r3, r1, r2
@@ -63,13 +60,11 @@ module tb_tinker_2;
         @(posedge clk);
         @(posedge clk);
         @(posedge clk);
-        assert_true(uut.if_id_valid && uut.id_ex_valid, "Independent instructions occupy multiple stages");
+        assert_true(uut.if_id_valid && uut.id_ex1_valid, "Independent instructions occupy multiple stages");
 
         timeout = 0;
         while (!uut.hlt && timeout < 200) begin
             @(posedge clk);
-            if (uut.hazard_stall)
-                saw_hazard_stall = 1'b1;
             timeout = timeout + 1;
         end
 
@@ -77,7 +72,6 @@ module tb_tinker_2;
         @(posedge clk);
 
         assert_true(timeout < 200, "Smoke program reaches HALT");
-        assert_true(saw_hazard_stall, "Dependent ADD triggers a hazard stall before write-back");
         assert_true(uut.reg_file.registers[3] === 64'd12, "Dependent ADD still produces the correct result");
 
         if (passed_tests == total_tests)

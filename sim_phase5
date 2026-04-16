@@ -1,0 +1,4 @@
+#!/bin/bash
+IVERILOG=/opt/homebrew/bin/iverilog
+VVP=/opt/homebrew/bin/vvp
+$IVERILOG -g2012 -o /tmp/sim_p5 hdl/tb_phase5.sv && $VVP /tmp/sim_p5

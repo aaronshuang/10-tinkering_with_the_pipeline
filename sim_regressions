@@ -14,6 +14,9 @@ $IVERILOG -g2012 -o /tmp/sim_p3 hdl/tb_predictor.sv && $VVP /tmp/sim_p3
 echo -e "\n--- Phase 4: Memory Queues ---"
 $IVERILOG -g2012 -o /tmp/sim_p4 hdl/tb_phase4.sv && $VVP /tmp/sim_p4
 
+echo -e "\n--- Phase 5: Deeper Pipelines ---"
+$IVERILOG -g2012 -o /tmp/sim_p5 hdl/tb_phase5.sv && $VVP /tmp/sim_p5
+
 echo -e "\n--- Comprehensive Pipeline Tests ---"
 $IVERILOG -g2012 -o /tmp/sim_comp hdl/tb_tinker.sv && $VVP /tmp/sim_comp
 

@@ -187,7 +187,7 @@ module tb_phase2;
     end
 
     initial begin
-        $dumpfile("tinker_phase2.vcd");
+        // $dumpfile("tinker_phase2.vcd");
         $dumpvars(0, tb_phase2);
 
         clk   = 0;

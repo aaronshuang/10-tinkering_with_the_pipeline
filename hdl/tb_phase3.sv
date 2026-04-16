@@ -57,7 +57,7 @@ module tb_phase3;
     always @(posedge clk) if (!reset && !uut.hlt) cycles = cycles + 1;
 
     initial begin
-        $dumpfile("tinker_phase3.vcd");
+        // $dumpfile("tinker_phase3.vcd");
         $dumpvars(0, tb_phase3);
 
         clk   = 0;

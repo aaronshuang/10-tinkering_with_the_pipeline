@@ -129,6 +129,7 @@ module tinker_core (
 
     reg [63:0] pc;
     integer i;
+    reg halt_pending;
 
     reg if_id_valid;
     reg [63:0] if_id_pc;
@@ -160,6 +161,7 @@ module tinker_core (
     reg ex2_is_branch;
     reg ex2_predicted_taken;
     reg [63:0] ex2_predicted_target;
+    reg ex2_long_op_started;
 
     reg ex2_mem_valid;
     reg [63:0] mem_pc;
@@ -251,19 +253,34 @@ module tinker_core (
     wire [63:0] alu_input_b = ex2_use_immediate ? extend_imm(ex2_opcode, ex2_imm) : ex2_B;
     wire [63:0] alu_res;
     wire [63:0] fpu_res;
+    wire alu_busy, alu_done;
+    wire fpu_busy, fpu_done;
 
-    ALU alu (
+    wire alu_start = ex1_ex2_valid && !ex2_use_fpu_instruction && (ex2_opcode == OP_MUL || ex2_opcode == OP_DIV);
+    wire fpu_start = ex1_ex2_valid && ex2_use_fpu_instruction && (ex2_opcode == OP_MULF || ex2_opcode == OP_DIVF);
+
+    ALU alu_inst (
+        .clk(clk),
+        .reset(reset),
+        .start(alu_start && !ex2_long_op_started),
         .a(alu_input_a),
         .b(alu_input_b),
         .op(ex2_opcode),
-        .res(alu_res)
+        .res(alu_res),
+        .busy(alu_busy),
+        .done(alu_done)
     );
 
-    FPU fpu (
+    FPU fpu_inst (
+        .clk(clk),
+        .reset(reset),
+        .start(fpu_start && !ex2_long_op_started),
         .a(ex2_A),
         .b(alu_input_b),
         .op(ex2_opcode),
-        .res(fpu_res)
+        .res(fpu_res),
+        .busy(fpu_busy),
+        .done(fpu_done)
     );
 
     // --- Store-to-Load Forwarding (SLF) Logic ---
@@ -419,11 +436,13 @@ module tinker_core (
     wire lu_rs = id_ex1_valid && uses_rs(ex1_opcode)        && ex1_ex2_valid && (ex2_opcode == OP_MOV_ML) && (ex1_rs == ex2_rd);
     wire lu_rt = id_ex1_valid && uses_rt(ex1_opcode)        && ex1_ex2_valid && (ex2_opcode == OP_MOV_ML) && (ex1_rt == ex2_rd);
     wire lu_rd = id_ex1_valid && uses_rd_source(ex1_opcode) && ex1_ex2_valid && (ex2_opcode == OP_MOV_ML) && (ex1_rd == ex2_rd);
+    wire lu_stall = lu_rs || lu_rt || lu_rd;
 
     wire sb_full = (sb_count == 3'd4);
     wire sb_stall = ex2_mem_valid && mem_write && sb_full;
+    wire alu_busy_stall = alu_busy || fpu_busy;
 
-    wire pipeline_stall = lu_rs || lu_rt || lu_rd || sb_stall;
+    wire pipeline_stall = lu_rs || lu_rt || lu_rd || sb_stall || alu_busy_stall;
     wire halt_in_ex2 = ex1_ex2_valid && (ex2_opcode == OP_PRIV) && (ex2_imm == 12'b0);
 
     // Dynamic resolution in EX2
@@ -435,6 +454,7 @@ module tinker_core (
         if (reset) begin
             pc <= 64'h2000;
             hlt <= 1'b0;
+            halt_pending <= 1'b0;
 
             if_id_valid <= 1'b0;
             if_id_pc <= 64'b0;
@@ -510,7 +530,11 @@ module tinker_core (
             ex2_mem_valid <= 1'b0;
             mem_wb_valid <= 1'b0;
         end else begin
-            if (halt_in_ex2 && (sb_count == 3'b0)) begin
+            if (halt_in_ex2) begin
+                halt_pending <= 1'b1;
+            end
+
+            if (halt_pending && (sb_count == 3'b0) && !(ex2_mem_valid && mem_write)) begin
                 $display("Execution Halted.");
                 hlt <= 1'b1;
             end
@@ -519,12 +543,12 @@ module tinker_core (
                 pc <= mem_read_data;
             end else if (ex_control_flush) begin
                 pc <= take_branch ? branch_target : (ex2_pc + 64'd4);
-            end else if (!pipeline_stall && !halt_in_ex2) begin
+            end else if (!pipeline_stall && !halt_in_ex2 && !halt_pending) begin
                 pc <= next_pc_predict;
             end
 
             // --- STAGE 0: Fetch -> IF/ID ---
-            if (mem_control_flush || ex_control_flush || halt_in_ex2) begin
+            if (mem_control_flush || ex_control_flush || halt_in_ex2 || halt_pending) begin
                 if_id_valid <= 1'b0;
                 if_id_pc <= 64'b0;
                 if_id_instr <= 32'b0;
@@ -539,7 +563,7 @@ module tinker_core (
             end
 
             // --- STAGE 1: IF/ID -> ID/EX1 ---
-            if (mem_control_flush || ex_control_flush || halt_in_ex2) begin
+            if (mem_control_flush || ex_control_flush || halt_in_ex2 || halt_pending) begin
                 id_ex1_valid <= 1'b0;
                 ex1_pc <= 64'b0;
                 ex1_opcode <= 5'b0;
@@ -574,7 +598,7 @@ module tinker_core (
             end
 
             // --- STAGE 2: ID/EX1 -> EX1/EX2 ---
-            if (mem_control_flush || ex_control_flush || pipeline_stall || halt_in_ex2) begin
+            if (mem_control_flush || ex_control_flush || halt_in_ex2 || halt_pending) begin
                 ex1_ex2_valid <= 1'b0;
                 ex2_pc <= 64'b0;
                 ex2_opcode <= 5'b0;
@@ -588,6 +612,13 @@ module tinker_core (
                 ex2_is_branch <= 1'b0;
                 ex2_predicted_taken <= 1'b0;
                 ex2_predicted_target <= 64'b0;
+                ex2_long_op_started <= 1'b0;
+            end else if (alu_busy_stall) begin
+                // FREEZE EX2 during own functional unit busy state
+            end else if (sb_stall || lu_stall) begin
+                // BUBBLE EX2 if preceding stages are stalled
+                ex1_ex2_valid <= 1'b0;
+                ex2_long_op_started <= 1'b0;
             end else begin
                 ex1_ex2_valid <= id_ex1_valid;
                 ex2_pc <= ex1_pc;
@@ -602,6 +633,13 @@ module tinker_core (
                 ex2_is_branch <= ex1_is_branch;
                 ex2_predicted_taken <= ex1_predicted_taken;
                 ex2_predicted_target <= ex1_predicted_target;
+                ex2_long_op_started <= 1'b0;
+            end
+
+            // Keep long_op_started high once pulse is sent
+            if (ex1_ex2_valid && !pipeline_stall) begin
+                if (alu_start || fpu_start)
+                    ex2_long_op_started <= 1'b1;
             end
 
             // --- STAGE 3: EX1/EX2 -> EX2/MEM ---
@@ -624,6 +662,8 @@ module tinker_core (
                     mem_store_data <= 64'b0;
                     ALUOut <= 64'b0;
                     FPUOut <= 64'b0;
+                end else if (sb_stall || alu_busy_stall) begin
+                    // Freeze MEM stages during stalls
                 end else begin
                     ex2_mem_valid <= ex1_ex2_valid;
                     mem_pc <= ex2_pc;
@@ -636,7 +676,7 @@ module tinker_core (
             end
 
             // --- STAGE 4: EX2/MEM -> MEM/WB ---
-            if (halt_in_ex2) begin
+            if (halt_in_ex2 || halt_pending) begin
                 mem_wb_valid <= 1'b0;
                 wb_opcode <= 5'b0;
                 wb_rd <= 5'b0;
