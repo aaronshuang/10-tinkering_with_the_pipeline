@@ -209,8 +209,78 @@ module tinker_core (
         .r31_val(r31_val)
     );
 
-    wire [63:0] alu_input_a = uses_rd_as_alu_a(ex_opcode) ? RD_LATCH : A;
-    wire [63:0] alu_input_b = ex_use_immediate ? extend_imm(ex_opcode, ex_imm) : B;
+    // Forward-declared so forwarding muxes can reference it before the memory instantiation
+    wire [63:0] mem_read_data;
+
+    // ---------------------------------------------------------------
+    // Forwarding network (Phase 2)
+    // Priority (highest → lowest): EX/MEM non-load, EX/MEM load, MEM/WB
+    // ---------------------------------------------------------------
+
+    // Forwarded result from MEM stage (non-load: ALUOut/FPUOut; load: mem_read_data)
+    wire [63:0] fwd_val_ex_mem =
+        (mem_opcode >= OP_ADDF && mem_opcode <= OP_DIVF) ? FPUOut : ALUOut;
+
+    // Forwarded result from WB stage
+    wire [63:0] fwd_val_mem_wb =
+        (wb_opcode == OP_MOV_ML)                        ? MDR        :
+        (wb_opcode >= OP_ADDF && wb_opcode <= OP_DIVF)  ? wb_fpu_out :
+                                                           wb_alu_out;
+
+    // --- forwarded_A (rs operand) ---
+    wire fwd_A_exmem_nl = id_ex_valid && ex_mem_valid
+                          && writes_register(mem_opcode) && (mem_opcode != OP_MOV_ML)
+                          && uses_rs(ex_opcode) && (ex_rs == mem_rd);
+    wire fwd_A_exmem_ld = id_ex_valid && ex_mem_valid
+                          && (mem_opcode == OP_MOV_ML)
+                          && uses_rs(ex_opcode) && (ex_rs == mem_rd);
+    wire fwd_A_wb       = id_ex_valid && mem_wb_valid
+                          && writes_register(wb_opcode)
+                          && uses_rs(ex_opcode) && (ex_rs == wb_rd);
+
+    wire [63:0] forwarded_A =
+        fwd_A_exmem_nl ? fwd_val_ex_mem :
+        fwd_A_exmem_ld ? mem_read_data  :
+        fwd_A_wb       ? fwd_val_mem_wb :
+                         A;
+
+    // --- forwarded_B (rt operand) ---
+    wire fwd_B_exmem_nl = id_ex_valid && ex_mem_valid
+                          && writes_register(mem_opcode) && (mem_opcode != OP_MOV_ML)
+                          && uses_rt(ex_opcode) && (ex_rt == mem_rd);
+    wire fwd_B_exmem_ld = id_ex_valid && ex_mem_valid
+                          && (mem_opcode == OP_MOV_ML)
+                          && uses_rt(ex_opcode) && (ex_rt == mem_rd);
+    wire fwd_B_wb       = id_ex_valid && mem_wb_valid
+                          && writes_register(wb_opcode)
+                          && uses_rt(ex_opcode) && (ex_rt == wb_rd);
+
+    wire [63:0] forwarded_B =
+        fwd_B_exmem_nl ? fwd_val_ex_mem :
+        fwd_B_exmem_ld ? mem_read_data  :
+        fwd_B_wb       ? fwd_val_mem_wb :
+                         B;
+
+    // --- forwarded_RD (rd used as source) ---
+    wire fwd_RD_exmem_nl = id_ex_valid && ex_mem_valid
+                           && writes_register(mem_opcode) && (mem_opcode != OP_MOV_ML)
+                           && uses_rd_source(ex_opcode) && (ex_rd == mem_rd);
+    wire fwd_RD_exmem_ld = id_ex_valid && ex_mem_valid
+                           && (mem_opcode == OP_MOV_ML)
+                           && uses_rd_source(ex_opcode) && (ex_rd == mem_rd);
+    wire fwd_RD_wb       = id_ex_valid && mem_wb_valid
+                           && writes_register(wb_opcode)
+                           && uses_rd_source(ex_opcode) && (ex_rd == wb_rd);
+
+    wire [63:0] forwarded_RD =
+        fwd_RD_exmem_nl ? fwd_val_ex_mem :
+        fwd_RD_exmem_ld ? mem_read_data  :
+        fwd_RD_wb       ? fwd_val_mem_wb :
+                          RD_LATCH;
+
+    // ALU / FPU use forwarded operands
+    wire [63:0] alu_input_a = uses_rd_as_alu_a(ex_opcode) ? forwarded_RD : forwarded_A;
+    wire [63:0] alu_input_b = ex_use_immediate ? extend_imm(ex_opcode, ex_imm) : forwarded_B;
     wire [63:0] alu_res;
     wire [63:0] fpu_res;
 
@@ -222,7 +292,7 @@ module tinker_core (
     );
 
     FPU fpu (
-        .a(A),
+        .a(forwarded_A),
         .b(alu_input_b),
         .op(ex_opcode),
         .res(fpu_res)
@@ -233,7 +303,6 @@ module tinker_core (
     wire [63:0] mem_wdata = (mem_opcode == OP_CALL) ? (mem_pc + 64'd4) : mem_store_data;
     wire mem_read = ex_mem_valid && (mem_opcode == OP_MOV_ML || mem_opcode == OP_RET);
     wire mem_write = ex_mem_valid && (mem_opcode == OP_MOV_SM || mem_opcode == OP_CALL);
-    wire [63:0] mem_read_data;
 
     memory memory (
         .clk(clk),
@@ -261,55 +330,43 @@ module tinker_core (
             case (ex_opcode)
                 OP_BR: begin
                     take_branch = 1'b1;
-                    branch_target = RD_LATCH;
+                    branch_target = forwarded_RD;
                 end
                 OP_BRR_R: begin
                     take_branch = 1'b1;
-                    branch_target = ex_pc + RD_LATCH;
+                    branch_target = ex_pc + forwarded_RD;
                 end
                 OP_BRR_L: begin
                     take_branch = 1'b1;
                     branch_target = ex_pc + {{52{ex_imm[11]}}, ex_imm};
                 end
                 OP_BRNZ: begin
-                    if (A != 0) begin
+                    if (forwarded_A != 0) begin
                         take_branch = 1'b1;
-                        branch_target = RD_LATCH;
+                        branch_target = forwarded_RD;
                     end
                 end
                 OP_CALL: begin
                     take_branch = 1'b1;
-                    branch_target = RD_LATCH;
+                    branch_target = forwarded_RD;
                 end
                 OP_BRGT: begin
-                    if (A > B) begin
+                    if ($signed(forwarded_A) > $signed(forwarded_B)) begin
                         take_branch = 1'b1;
-                        branch_target = RD_LATCH;
+                        branch_target = forwarded_RD;
                     end
                 end
             endcase
         end
     end
 
-    wire hazard_on_rs = uses_rs(opcode) && (
-        (id_ex_valid && writes_register(ex_opcode) && (rs == ex_rd)) ||
-        (ex_mem_valid && writes_register(mem_opcode) && (rs == mem_rd)) ||
-        (mem_wb_valid && writes_register(wb_opcode) && (rs == wb_rd))
-    );
+    // Load-use hazard: a load in EX whose result is needed by the instruction
+    // currently in ID.  All other RAW hazards are resolved by forwarding.
+    wire lu_rs = uses_rs(opcode)        && id_ex_valid && (ex_opcode == OP_MOV_ML) && (rs == ex_rd);
+    wire lu_rt = uses_rt(opcode)        && id_ex_valid && (ex_opcode == OP_MOV_ML) && (rt == ex_rd);
+    wire lu_rd = uses_rd_source(opcode) && id_ex_valid && (ex_opcode == OP_MOV_ML) && (rd == ex_rd);
 
-    wire hazard_on_rt = uses_rt(opcode) && (
-        (id_ex_valid && writes_register(ex_opcode) && (rt == ex_rd)) ||
-        (ex_mem_valid && writes_register(mem_opcode) && (rt == mem_rd)) ||
-        (mem_wb_valid && writes_register(wb_opcode) && (rt == wb_rd))
-    );
-
-    wire hazard_on_rd = uses_rd_source(opcode) && (
-        (id_ex_valid && writes_register(ex_opcode) && (rd == ex_rd)) ||
-        (ex_mem_valid && writes_register(mem_opcode) && (rd == mem_rd)) ||
-        (mem_wb_valid && writes_register(wb_opcode) && (rd == wb_rd))
-    );
-
-    wire hazard_stall = if_id_valid && (hazard_on_rs || hazard_on_rt || hazard_on_rd);
+    wire hazard_stall = if_id_valid && (lu_rs || lu_rt || lu_rd);
     wire halt_in_ex = id_ex_valid && (ex_opcode == OP_PRIV) && (ex_imm == 12'b0);
     wire ex_control_flush = id_ex_valid && ex_is_branch && (ex_opcode != OP_RET) && take_branch;
     wire mem_control_flush = ex_mem_valid && (mem_opcode == OP_RET);
@@ -433,7 +490,7 @@ module tinker_core (
                     mem_pc <= ex_pc;
                     mem_opcode <= ex_opcode;
                     mem_rd <= ex_rd;
-                    mem_store_data <= A;
+                    mem_store_data <= forwarded_A;
                     ALUOut <= alu_res;
                     FPUOut <= fpu_res;
                 end
