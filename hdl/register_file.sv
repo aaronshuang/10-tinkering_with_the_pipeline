@@ -12,9 +12,9 @@ module register_file (
 );
     reg [63:0] registers [0:31];
 
-    assign rd_val = registers[rd];
-    assign rs_val = registers[rs];
-    assign rt_val = registers[rt];
+    assign rd_val = (write_enable && (write_rd == rd)) ? data : registers[rd];
+    assign rs_val = (write_enable && (write_rd == rs)) ? data : registers[rs];
+    assign rt_val = (write_enable && (write_rd == rt)) ? data : registers[rt];
     assign r31_val = registers[31];
 
     integer i;

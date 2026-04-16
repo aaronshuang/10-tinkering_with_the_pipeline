@@ -256,8 +256,10 @@ module tinker_core (
     wire alu_busy, alu_done;
     wire fpu_busy, fpu_done;
 
-    wire alu_start = ex1_ex2_valid && !ex2_use_fpu_instruction && (ex2_opcode == OP_MUL || ex2_opcode == OP_DIV);
-    wire fpu_start = ex1_ex2_valid && ex2_use_fpu_instruction && (ex2_opcode == OP_MULF || ex2_opcode == OP_DIVF);
+    wire ex2_needs_alu_pipe = ex1_ex2_valid && !ex2_use_fpu_instruction && (ex2_opcode == OP_MUL || ex2_opcode == OP_DIV);
+    wire ex2_needs_fpu_pipe = ex1_ex2_valid && ex2_use_fpu_instruction && writes_register(ex2_opcode);
+    wire alu_start = ex2_needs_alu_pipe && !ex2_long_op_started;
+    wire fpu_start = ex2_needs_fpu_pipe && !ex2_long_op_started;
 
     ALU alu_inst (
         .clk(clk),
@@ -440,7 +442,9 @@ module tinker_core (
 
     wire sb_full = (sb_count == 3'd4);
     wire sb_stall = ex2_mem_valid && mem_write && sb_full;
-    wire alu_busy_stall = alu_busy || fpu_busy;
+    wire ex2_waiting_for_alu = ex2_needs_alu_pipe && (!ex2_long_op_started || !alu_done);
+    wire ex2_waiting_for_fpu = ex2_needs_fpu_pipe && (!ex2_long_op_started || !fpu_done);
+    wire alu_busy_stall = ex2_waiting_for_alu || ex2_waiting_for_fpu;
 
     wire pipeline_stall = lu_rs || lu_rt || lu_rd || sb_stall || alu_busy_stall;
     wire halt_in_ex2 = ex1_ex2_valid && (ex2_opcode == OP_PRIV) && (ex2_imm == 12'b0);
@@ -636,10 +640,9 @@ module tinker_core (
                 ex2_long_op_started <= 1'b0;
             end
 
-            // Keep long_op_started high once pulse is sent
-            if (ex1_ex2_valid && !pipeline_stall) begin
-                if (alu_start || fpu_start)
-                    ex2_long_op_started <= 1'b1;
+            // Keep long_op_started high once the long-latency op launches.
+            if (ex1_ex2_valid && (alu_start || fpu_start)) begin
+                ex2_long_op_started <= 1'b1;
             end
 
             // --- STAGE 3: EX1/EX2 -> EX2/MEM ---

@@ -45,9 +45,6 @@ module tb_tinker_2;
     endtask
 
     initial begin
-        $dumpfile("tinker_pipeline_smoke.vcd");
-        $dumpvars(0, tb_tinker_2);
-
         clk = 0;
         reset = 1;
         write_inst(16'h2000, 5'h19, 5'd1, 5'd0, 5'd0, 12'd5);  // addi r1, 5

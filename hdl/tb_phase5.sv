@@ -12,6 +12,14 @@ module tb_phase5;
         .hlt(hlt)
     );
 
+    localparam [63:0] FP_4P0  = 64'h4010000000000000;
+    localparam [63:0] FP_2P0  = 64'h4000000000000000;
+    localparam [63:0] FP_6P0  = 64'h4018000000000000;
+    localparam [63:0] FP_3P0  = 64'h4008000000000000;
+    localparam [63:0] FP_8P0  = 64'h4020000000000000;
+    localparam [63:0] FP_20P0 = 64'h4034000000000000;
+    localparam [63:0] FP_5P0  = 64'h4014000000000000;
+
     // Instruction sequence
     initial begin
         for (integer i=0; i<4096; i=i+1) uut.memory.bytes[i] = 8'h0;
@@ -22,10 +30,16 @@ module tb_phase5;
         write_inst(16'h2004, 5'h18, 4, 1, 2, 12'd0);
         // [0x2008] DIV r5, r1, r2 (r5 = 2, Latency 8)
         write_inst(16'h2008, 5'h1D, 5, 1, 2, 12'd0);
-        // [0x200C] MULF r12, r10, r11 (r12 = 50.0, Latency 4)
-        write_inst(16'h200C, 5'h16, 12, 10, 11, 12'd0);
-        // [0x2010] PRIV 0 (HALT)
-        write_inst(16'h2010, 5'h0F, 0, 0, 0, 12'd0);
+        // [0x200C] ADDF r12, r10, r11 (r12 = 6.0)
+        write_inst(16'h200C, 5'h14, 12, 10, 11, 12'd0);
+        // [0x2010] SUBF r13, r10, r11 (r13 = 2.0)
+        write_inst(16'h2010, 5'h15, 13, 10, 11, 12'd0);
+        // [0x2014] MULF r14, r10, r11 (r14 = 8.0)
+        write_inst(16'h2014, 5'h16, 14, 10, 11, 12'd0);
+        // [0x2018] DIVF r15, r16, r17 (r15 = 5.0)
+        write_inst(16'h2018, 5'h17, 15, 16, 17, 12'd0);
+        // [0x201C] PRIV 0 (HALT)
+        write_inst(16'h201C, 5'h0F, 0, 0, 0, 12'd0);
     end
 
     task write_inst;
@@ -52,9 +66,13 @@ module tb_phase5;
     always #5 clk = ~clk;
 
     integer cycles = 0;
+    integer fpu_busy_cycles = 0;
+    reg saw_fpu_s1 = 0;
+    reg saw_fpu_s2 = 0;
+    reg saw_fpu_s3 = 0;
+    reg saw_fpu_s4 = 0;
+    reg saw_fpu_s5 = 0;
     initial begin
-        // $dumpfile("tinker_phase5.vcd");
-        $dumpvars(0, tb_phase5);
         clk = 0;
         reset = 1;
         #20 reset = 0;
@@ -63,12 +81,20 @@ module tb_phase5;
         // does not immediately clear the test inputs back to zero.
         uut.reg_file.registers[1] = 64'd10;
         uut.reg_file.registers[2] = 64'd5;
-        uut.reg_file.registers[10] = 64'h4024000000000000;
-        uut.reg_file.registers[11] = 64'h4014000000000000;
+        uut.reg_file.registers[10] = FP_4P0;
+        uut.reg_file.registers[11] = FP_2P0;
+        uut.reg_file.registers[16] = FP_20P0;
+        uut.reg_file.registers[17] = FP_4P0;
 
-        while (!hlt && cycles < 100) begin
+        while (!hlt && cycles < 200) begin
             @(posedge clk);
             cycles = cycles + 1;
+            if (uut.fpu_inst.s1_valid) saw_fpu_s1 = 1;
+            if (uut.fpu_inst.s2_valid) saw_fpu_s2 = 1;
+            if (uut.fpu_inst.s3_valid) saw_fpu_s3 = 1;
+            if (uut.fpu_inst.s4_valid) saw_fpu_s4 = 1;
+            if (uut.fpu_inst.s5_valid) saw_fpu_s5 = 1;
+            if (uut.fpu_busy) fpu_busy_cycles = fpu_busy_cycles + 1;
             if (uut.alu_busy_stall) $display("Cycle %d: Stall due to ALU/FPU Busy", cycles);
         end
 
@@ -76,10 +102,24 @@ module tb_phase5;
         $display("[RESULT] r3 (10 * 5) = %d (expected 50)", uut.reg_file.registers[3]);
         $display("[RESULT] r4 (10 + 5) = %d (expected 15)", uut.reg_file.registers[4]);
         $display("[RESULT] r5 (10 / 5) = %d (expected 2)", uut.reg_file.registers[5]);
-        $display("[RESULT] r12 (10.0 * 5.0) = %h (expected 4049000000000000)", uut.reg_file.registers[12]);
+        $display("[RESULT] r12 (4.0 + 2.0) = %h (expected %h)", uut.reg_file.registers[12], FP_6P0);
+        $display("[RESULT] r13 (4.0 - 2.0) = %h (expected %h)", uut.reg_file.registers[13], FP_2P0);
+        $display("[RESULT] r14 (4.0 * 2.0) = %h (expected %h)", uut.reg_file.registers[14], FP_8P0);
+        $display("[RESULT] r15 (20.0 / 4.0) = %h (expected %h)", uut.reg_file.registers[15], FP_5P0);
+        $display("[RESULT] FPU busy cycles observed = %0d", fpu_busy_cycles);
+        $display("[RESULT] FPU stages seen = %0d%0d%0d%0d%0d", saw_fpu_s1, saw_fpu_s2, saw_fpu_s3, saw_fpu_s4, saw_fpu_s5);
         $display("Total cycles: %d", cycles);
         
-        if (uut.reg_file.registers[3] == 50 && uut.reg_file.registers[5] == 2 && cycles > 20) begin
+        if (uut.reg_file.registers[3] == 64'd50 &&
+            uut.reg_file.registers[4] == 64'd15 &&
+            uut.reg_file.registers[5] == 64'd2 &&
+            uut.reg_file.registers[12] == FP_6P0 &&
+            uut.reg_file.registers[13] == FP_2P0 &&
+            uut.reg_file.registers[14] == FP_8P0 &&
+            uut.reg_file.registers[15] == FP_5P0 &&
+            saw_fpu_s1 && saw_fpu_s2 && saw_fpu_s3 && saw_fpu_s4 && saw_fpu_s5 &&
+            fpu_busy_cycles >= 20 &&
+            cycles > 20) begin
             $display("[PASS] Long-latency operations verified.");
         end else begin
             $display("[FAIL] Results or cycle count mismatch.");

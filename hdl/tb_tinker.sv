@@ -153,9 +153,6 @@ module tb_tinker;
     end
 
     initial begin
-        $dumpfile("tinker_pipeline_comprehensive.vcd");
-        $dumpvars(0, tb_tinker);
-
         clk = 0;
         reset = 1;
 
