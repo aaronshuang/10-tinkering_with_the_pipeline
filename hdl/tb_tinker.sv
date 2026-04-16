@@ -232,6 +232,8 @@ module tb_tinker;
             timeout = timeout + 1;
         end
 
+        @(posedge clk);
+
         if (timeout >= 2000) begin
             $display("\n[FATAL] Timeout waiting for HALT.\n");
             $finish;

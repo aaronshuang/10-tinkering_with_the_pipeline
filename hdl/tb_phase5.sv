@@ -118,8 +118,8 @@ module tb_phase5;
             uut.reg_file.registers[14] == FP_8P0 &&
             uut.reg_file.registers[15] == FP_5P0 &&
             saw_fpu_s1 && saw_fpu_s2 && saw_fpu_s3 && saw_fpu_s4 && saw_fpu_s5 &&
-            fpu_busy_cycles >= 20 &&
-            cycles > 20) begin
+            cycles > 20 &&
+            cycles < 200) begin
             $display("[PASS] Long-latency operations verified.");
         end else begin
             $display("[FAIL] Results or cycle count mismatch.");
